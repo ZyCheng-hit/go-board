@@ -1,0 +1,145 @@
+name: Deploy Go Board AI
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: go-board-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout browser KataGo app
+        uses: actions/checkout@v6
+        with:
+          repository: Sir-Teo/web-katrain
+          ref: 35a5113f9b3ade5ce2116884f3a2d00e02c7c77b
+          path: app
+          lfs: true
+
+      - name: Customize for iPhone
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          root = Path("app")
+
+          # App title / iPhone PWA branding.
+          index_path = root / "index.html"
+          html = index_path.read_text(encoding="utf-8")
+          html = html.replace('<html lang="en">', '<html lang="zh-Hans">')
+          html = html.replace('<title>Web KaTrain</title>', '<title>围棋试下</title>')
+          html = html.replace('content="Web KaTrain"', 'content="围棋试下"')
+          html = html.replace(
+              'content="Web KaTrain is a browser-native Go study board with SGF editing, analysis, library storage, and offline-ready review tools."',
+              'content="iPhone 围棋摆棋、悔棋、试下与浏览器本地 KataGo 分析。"'
+          )
+          index_path.write_text(html, encoding="utf-8")
+
+          manifest_path = root / "public" / "manifest.webmanifest"
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          manifest["name"] = "围棋试下"
+          manifest["short_name"] = "围棋"
+          manifest["description"] = "iPhone 围棋摆棋、悔棋、试下与浏览器本地 KataGo 分析。"
+          manifest_path.write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+
+          # Phone-oriented defaults:
+          # - Chinese UI
+          # - 250 visits instead of desktop-oriented 5000
+          # - at most 4 seconds per analysis
+          # - smaller batch / fewer candidate labels
+          store_path = root / "src" / "store" / "gameStore.ts"
+          store = store_path.read_text(encoding="utf-8")
+
+          patches = [
+              (r"export const DEFAULT_KATAGO_VISITS\s*=\s*\d+;",
+               "export const DEFAULT_KATAGO_VISITS = 250;"),
+              (r"katagoMaxTimeMs:\s*\d+,",
+               "katagoMaxTimeMs: 4000,"),
+              (r"katagoBatchSize:\s*\d+,",
+               "katagoBatchSize: 8,"),
+              (r"katagoTopK:\s*\d+,",
+               "katagoTopK: 5,"),
+          ]
+          for pattern, replacement in patches:
+              store, count = re.subn(pattern, replacement, store, count=1)
+              print(f"{pattern}: {'patched' if count else 'not found; kept upstream default'}")
+
+          store = store.replace(
+              "appLocale: getPreferredAppLocaleId(),",
+              "appLocale: 'zh',",
+              1,
+          )
+          # Keep the board cleaner by default; ownership can still be enabled in analysis settings.
+          store = store.replace(
+              "analysisShowOwnership: true,",
+              "analysisShowOwnership: false,",
+              1,
+          )
+          store_path.write_text(store, encoding="utf-8")
+
+          # Keep upstream license in the deployed site.
+          license_text = (root / "LICENSE").read_text(encoding="utf-8")
+          (root / "public" / "WEB_KATRAIN_LICENSE.txt").write_text(
+              license_text,
+              encoding="utf-8",
+          )
+
+          (root / "public" / "GO_BOARD_BUILD.txt").write_text(
+              "Private iPhone Go board build based on Web KaTrain commit "
+              "35a5113f9b3ade5ce2116884f3a2d00e02c7c77b\n"
+              "Default local analysis: 250 visits, max 4 seconds, WebGPU preferred.\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Build iPhone PWA
+        working-directory: app
+        env:
+          VITE_BASE_URL: /go-board/
+        run: npm run build
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
