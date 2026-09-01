@@ -63,10 +63,7 @@ jobs:
           cat > app/src/components/PersonalModeDock.tsx <<'EOF'
           import React, { useEffect, useMemo, useState } from 'react';
           import { useGameStore } from '../store/gameStore';
-          import {
-            usePersonalModeStore,
-            type PersonalMode,
-          } from '../store/personalModeStore';
+          import { usePersonalModeStore, type PersonalMode } from '../store/personalModeStore';
           import type { CandidateMove, EditTool } from '../types';
 
           function moveLabel(move: CandidateMove, boardSize: number): string {
@@ -76,34 +73,16 @@ jobs:
           }
 
           function scoreText(scoreLead: number): string {
-            if (!Number.isFinite(scoreLead) || Math.abs(scoreLead) < 0.05) return '接近持平';
+            if (!Number.isFinite(scoreLead) || Math.abs(scoreLead) < 0.05) return '持平';
             const side = scoreLead > 0 ? '黑' : '白';
-            return `${side} +${Math.abs(scoreLead).toFixed(1)}目`;
+            return `${side}+${Math.abs(scoreLead).toFixed(1)}目`;
           }
 
           function candidateLossText(move: CandidateMove, index: number): string {
             if (index === 0) return '最佳';
             const loss = Math.max(0, move.relativePointsLost ?? move.pointsLost ?? 0);
-            return `损失约 ${loss.toFixed(1)}目`;
+            return `-${loss.toFixed(1)}目`;
           }
-
-          const MODE_INFO: Record<PersonalMode, { title: string; subtitle: string; icon: string }> = {
-            play: {
-              title: '下棋模式',
-              subtitle: '关闭 AI，专心下棋',
-              icon: '●',
-            },
-            position: {
-              title: '局势分析',
-              subtitle: '只看当前胜率和目差',
-              icon: '◐',
-            },
-            guide: {
-              title: 'AI指导',
-              subtitle: '前三推荐与20手变化',
-              icon: '✦',
-            },
-          };
 
           const SETUP_TOOLS: Array<{ tool: EditTool; label: string; icon: string }> = [
             { tool: 'setup-black', label: '黑子', icon: '●' },
@@ -114,22 +93,20 @@ jobs:
 
           export const PersonalModeDock: React.FC = () => {
             const currentNode = useGameStore((state) => state.currentNode);
+            const currentPlayer = useGameStore((state) => state.currentPlayer);
             const isAnalysisMode = useGameStore((state) => state.isAnalysisMode);
             const toggleAnalysisMode = useGameStore((state) => state.toggleAnalysisMode);
             const runAnalysis = useGameStore((state) => state.runAnalysis);
             const updateSettings = useGameStore((state) => state.updateSettings);
             const engineStatus = useGameStore((state) => state.engineStatus);
-
             const navigateBack = useGameStore((state) => state.navigateBack);
             const navigateForward = useGameStore((state) => state.navigateForward);
             const passTurn = useGameStore((state) => state.passTurn);
             const resetGame = useGameStore((state) => state.resetGame);
-
             const isEditMode = useGameStore((state) => state.isEditMode);
             const toggleEditMode = useGameStore((state) => state.toggleEditMode);
             const editTool = useGameStore((state) => state.editTool);
             const setEditTool = useGameStore((state) => state.setEditTool);
-
             const isInsertMode = useGameStore((state) => state.isInsertMode);
             const toggleInsertMode = useGameStore((state) => state.toggleInsertMode);
 
@@ -139,9 +116,9 @@ jobs:
             const setPreviewMove = usePersonalModeStore((state) => state.setPreviewMove);
 
             const [newGameArmed, setNewGameArmed] = useState(false);
-
             const analysis = currentNode.analysis ?? null;
             const boardSize = currentNode.gameState.board.length;
+            const moveNumber = currentNode.gameState.moveHistory.length;
             const canGoBack = Boolean(currentNode.parent);
             const canGoForward = currentNode.children.length > 0;
 
@@ -154,13 +131,11 @@ jobs:
               [analysis]
             );
 
-            useEffect(() => {
-              setPreviewMove(null);
-            }, [currentNode.id, setPreviewMove]);
+            useEffect(() => setPreviewMove(null), [currentNode.id, setPreviewMove]);
 
             useEffect(() => {
               if (!newGameArmed) return;
-              const timer = window.setTimeout(() => setNewGameArmed(false), 2800);
+              const timer = window.setTimeout(() => setNewGameArmed(false), 2600);
               return () => window.clearTimeout(timer);
             }, [newGameArmed]);
 
@@ -171,9 +146,7 @@ jobs:
 
             const runForMode = (nextMode: Exclude<PersonalMode, 'play'>) => {
               const guide = nextMode === 'guide';
-
               stopBoardTools();
-
               updateSettings({
                 analysisShowChildren: false,
                 analysisShowEval: false,
@@ -181,14 +154,12 @@ jobs:
                 analysisShowPolicy: false,
                 analysisShowOwnership: false,
                 showAnalysisBar: false,
-
                 katagoVisits: guide ? 250 : 120,
                 katagoMaxTimeMs: guide ? 4000 : 2000,
                 katagoBatchSize: guide ? 8 : 4,
                 katagoTopK: guide ? 3 : 1,
                 katagoAnalysisPvLen: guide ? 20 : 0,
               });
-
               if (!isAnalysisMode) {
                 toggleAnalysisMode();
               } else {
@@ -206,7 +177,6 @@ jobs:
             const chooseMode = (nextMode: PersonalMode) => {
               setPreviewMove(null);
               setMode(nextMode);
-
               if (nextMode === 'play') {
                 updateSettings({
                   analysisShowChildren: false,
@@ -219,7 +189,6 @@ jobs:
                 if (isAnalysisMode) toggleAnalysisMode();
                 return;
               }
-
               runForMode(nextMode);
             };
 
@@ -243,7 +212,6 @@ jobs:
                 setNewGameArmed(true);
                 return;
               }
-
               if (isAnalysisMode) toggleAnalysisMode();
               if (isEditMode) toggleEditMode();
               if (isInsertMode) toggleInsertMode();
@@ -254,18 +222,8 @@ jobs:
             };
 
             const togglePreview = (move: CandidateMove) => {
-              const alreadySelected =
-                previewMove?.x === move.x && previewMove?.y === move.y;
-
-              if (alreadySelected) {
-                setPreviewMove(null);
-                return;
-              }
-
-              setPreviewMove({
-                ...move,
-                pv: move.pv?.slice(0, 20),
-              });
+              const selected = previewMove?.x === move.x && previewMove?.y === move.y;
+              setPreviewMove(selected ? null : { ...move, pv: move.pv?.slice(0, 20) });
             };
 
             const blackWinRate =
@@ -273,354 +231,168 @@ jobs:
                 ? Math.max(0, Math.min(100, analysis.rootWinRate * 100))
                 : null;
 
-            const modeButtonClass = (target: PersonalMode) => {
-              const active = mode === target;
-              return [
-                'group relative min-h-[58px] overflow-hidden rounded-xl border px-3 py-2 text-left transition-all duration-150 touch-manipulation',
-                active
-                  ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] shadow-sm'
-                  : 'border-[var(--ui-border)] bg-[var(--ui-surface)] hover:border-[var(--ui-border-strong)] hover:bg-[var(--ui-surface-2)]',
-              ].join(' ');
-            };
+            const modeButton = (target: PersonalMode, label: string) => (
+              <button
+                type="button"
+                onClick={() => chooseMode(target)}
+                aria-pressed={mode === target}
+                className={[
+                  'min-h-9 rounded-lg px-3 py-1.5 text-sm font-bold transition-all touch-manipulation',
+                  mode === target
+                    ? 'bg-[var(--ui-text)] text-[var(--ui-bg)] shadow-sm'
+                    : 'text-[var(--ui-text-muted)] hover:bg-[var(--ui-surface-2)] hover:text-[var(--ui-text)]',
+                ].join(' ')}
+              >
+                {label}
+              </button>
+            );
 
             const actionClass =
-              'min-h-11 rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-3 py-2 text-sm font-semibold text-[var(--ui-text)] transition-all hover:border-[var(--ui-border-strong)] hover:bg-[var(--ui-surface-2)] disabled:cursor-not-allowed disabled:opacity-35 touch-manipulation';
+              'min-h-9 rounded-lg border border-transparent px-2.5 py-1.5 text-xs font-semibold text-[var(--ui-text-muted)] transition-all hover:border-[var(--ui-border)] hover:bg-[var(--ui-surface-2)] hover:text-[var(--ui-text)] disabled:cursor-not-allowed disabled:opacity-30 touch-manipulation';
 
             const activeActionClass =
-              'min-h-11 rounded-xl border border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] px-3 py-2 text-sm font-semibold text-[var(--ui-text)] transition-all touch-manipulation';
+              'min-h-9 rounded-lg border border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] px-2.5 py-1.5 text-xs font-bold text-[var(--ui-text)] touch-manipulation';
+
+            const refreshCurrentMode = () => {
+              if (mode === 'position') runForMode('position');
+              if (mode === 'guide') runForMode('guide');
+            };
+
+            const aiStatus =
+              mode === 'play'
+                ? 'AI关闭'
+                : engineStatus === 'error'
+                  ? 'AI异常'
+                  : engineStatus === 'loading'
+                    ? '加载中…'
+                    : 'KataGo就绪';
 
             return (
               <section
-                className="personal-mode-dock relative z-[75] mx-auto mb-3 mt-2 w-[min(96vw,920px)] rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-panel)]/95 p-2.5 shadow-[0_10px_36px_rgba(15,23,42,0.10)] backdrop-blur-xl"
-                aria-label="私人围棋控制台"
+                className="personal-mode-dock relative z-[75] mx-auto mb-2 mt-2 w-[min(96vw,980px)] rounded-xl border border-[var(--ui-border)] bg-[var(--ui-panel)]/96 px-2.5 py-2 shadow-[0_6px_24px_rgba(15,23,42,0.07)] backdrop-blur-xl"
+                aria-label="围棋试下控制台"
               >
-                <div className="mb-2 flex items-center justify-between gap-3 px-1">
-                  <div>
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--ui-text-faint)]">
-                      私人围棋
-                    </div>
-                    <div className="text-sm font-semibold text-[var(--ui-text)]">
-                      {MODE_INFO[mode].title}
+                <div className="flex min-w-0 items-center gap-2">
+                  <div className="hidden min-w-[105px] shrink-0 sm:block">
+                    <div className="truncate text-sm font-black tracking-tight text-[var(--ui-text)]">围棋试下</div>
+                    <div className="truncate text-[10px] text-[var(--ui-text-faint)]">
+                      第{moveNumber}手 · {currentPlayer === 'black' ? '黑棋行棋' : '白棋行棋'}
                     </div>
                   </div>
 
-                  <div
-                    className={[
-                      'rounded-full border px-2.5 py-1 text-xs font-semibold',
-                      mode === 'play'
-                        ? 'border-[var(--ui-border)] bg-[var(--ui-surface)] text-[var(--ui-text-muted)]'
-                        : engineStatus === 'error'
-                          ? 'border-red-300 bg-red-50 text-red-700'
-                          : 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] text-[var(--ui-text)]',
-                    ].join(' ')}
-                  >
-                    {mode === 'play'
-                      ? 'AI 关闭'
-                      : engineStatus === 'error'
-                        ? 'AI 加载失败'
-                        : engineStatus === 'loading'
-                          ? 'AI 加载中…'
-                          : 'KataGo 就绪'}
+                  <div className="grid min-w-0 flex-1 grid-cols-3 rounded-[10px] bg-[var(--ui-surface-2)] p-0.5">
+                    {modeButton('play', '下棋')}
+                    {modeButton('position', '局势')}
+                    {modeButton('guide', 'AI指导')}
                   </div>
-                </div>
 
-                <div className="grid grid-cols-3 gap-1.5">
-                  {(['play', 'position', 'guide'] as PersonalMode[]).map((target) => {
-                    const info = MODE_INFO[target];
-                    const active = mode === target;
-
-                    return (
-                      <button
-                        key={target}
-                        type="button"
-                        className={modeButtonClass(target)}
-                        onClick={() => chooseMode(target)}
-                        aria-pressed={active}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={[
-                              'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold',
-                              active
-                                ? 'bg-[var(--ui-accent)] text-white'
-                                : 'bg-[var(--ui-surface-2)] text-[var(--ui-text-muted)]',
-                            ].join(' ')}
-                            aria-hidden="true"
-                          >
-                            {info.icon}
-                          </span>
-                          <span className="min-w-0">
-                            <span className="block truncate text-sm font-bold text-[var(--ui-text)]">
-                              {info.title}
-                            </span>
-                            <span className="hidden truncate text-[10px] text-[var(--ui-text-muted)] sm:block">
-                              {info.subtitle}
-                            </span>
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
+                  <div className="hidden shrink-0 items-center gap-1.5 rounded-full border border-[var(--ui-border)] bg-[var(--ui-surface)] px-2 py-1 text-[10px] font-bold text-[var(--ui-text-muted)] sm:flex">
+                    <span
+                      className={[
+                        'h-1.5 w-1.5 rounded-full',
+                        mode === 'play'
+                          ? 'bg-[var(--ui-text-faint)]'
+                          : engineStatus === 'error'
+                            ? 'bg-red-500'
+                            : 'bg-emerald-500',
+                      ].join(' ')}
+                    />
+                    {aiStatus}
+                  </div>
                 </div>
 
                 {mode === 'play' && (
-                  <div className="mt-2.5 border-t border-[var(--ui-border)] pt-2.5">
-                    <div className="mb-1.5 flex items-center justify-between px-0.5">
-                      <span className="text-xs font-semibold text-[var(--ui-text-muted)]">
-                        对局工具
-                      </span>
-                      <span className="text-[11px] text-[var(--ui-text-faint)]">
-                        {isInsertMode
-                          ? '研究变化中'
-                          : isEditMode
-                            ? '摆棋模式'
-                            : `第 ${currentNode.gameState.moveHistory.length} 手`}
-                      </span>
-                    </div>
+                  <div className="mt-1.5 flex flex-wrap items-center justify-center gap-0.5 border-t border-[var(--ui-border)] pt-1.5">
+                    <button type="button" className={actionClass} onClick={navigateBack} disabled={!canGoBack || isEditMode}>↶ 悔棋</button>
+                    <button type="button" className={actionClass} onClick={navigateForward} disabled={!canGoForward || isEditMode}>↷ 前进</button>
+                    <button type="button" className={actionClass} onClick={passTurn} disabled={isEditMode}>○ 停一手</button>
+                    <button type="button" className={isEditMode ? activeActionClass : actionClass} onClick={openSetup} aria-pressed={isEditMode}>◐ {isEditMode ? '结束摆棋' : '摆棋'}</button>
+                    <button type="button" className={isInsertMode ? activeActionClass : actionClass} onClick={toggleStudy} aria-pressed={isInsertMode}>◇ {isInsertMode ? '结束研究' : '研究变化'}</button>
+                    <button type="button" onClick={handleNewGame} className={newGameArmed ? 'min-h-9 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700' : actionClass}>＋ {newGameArmed ? '再点确认' : '新棋局'}</button>
+                  </div>
+                )}
 
-                    <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-6">
+                {mode === 'play' && isEditMode && (
+                  <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1 rounded-lg bg-[var(--ui-surface-2)] px-2 py-1.5">
+                    <span className="mr-1 text-[10px] font-bold text-[var(--ui-text-muted)]">摆棋</span>
+                    {SETUP_TOOLS.map(({ tool, label, icon }) => (
                       <button
+                        key={tool}
                         type="button"
-                        className={actionClass}
-                        onClick={navigateBack}
-                        disabled={!canGoBack || isEditMode}
-                        title="退回上一手"
+                        onClick={() => setEditTool(tool)}
+                        aria-pressed={editTool === tool}
+                        className={[
+                          'min-h-8 rounded-md px-2 py-1 text-xs font-semibold transition-colors',
+                          editTool === tool
+                            ? 'bg-[var(--ui-text)] text-[var(--ui-bg)]'
+                            : 'text-[var(--ui-text-muted)] hover:bg-[var(--ui-surface)] hover:text-[var(--ui-text)]',
+                        ].join(' ')}
                       >
-                        <span className="mr-1" aria-hidden="true">↶</span>
-                        悔棋
+                        {icon} {label}
                       </button>
+                    ))}
+                    <button type="button" onClick={toggleEditMode} className="min-h-8 rounded-md px-2 py-1 text-xs font-bold text-[var(--ui-accent)] hover:bg-[var(--ui-surface)]">✓ 完成</button>
+                  </div>
+                )}
 
-                      <button
-                        type="button"
-                        className={actionClass}
-                        onClick={navigateForward}
-                        disabled={!canGoForward || isEditMode}
-                        title="恢复下一手"
-                      >
-                        <span className="mr-1" aria-hidden="true">↷</span>
-                        前进
-                      </button>
-
-                      <button
-                        type="button"
-                        className={actionClass}
-                        onClick={passTurn}
-                        disabled={isEditMode}
-                        title="虚手 / 停一手"
-                      >
-                        <span className="mr-1" aria-hidden="true">○</span>
-                        停一手
-                      </button>
-
-                      <button
-                        type="button"
-                        className={isEditMode ? activeActionClass : actionClass}
-                        onClick={openSetup}
-                        aria-pressed={isEditMode}
-                        title="自由摆放黑白棋子"
-                      >
-                        <span className="mr-1" aria-hidden="true">◐</span>
-                        {isEditMode ? '结束摆棋' : '摆棋'}
-                      </button>
-
-                      <button
-                        type="button"
-                        className={isInsertMode ? activeActionClass : actionClass}
-                        onClick={toggleStudy}
-                        aria-pressed={isInsertMode}
-                        title="从当前局面研究一条变化"
-                      >
-                        <span className="mr-1" aria-hidden="true">◇</span>
-                        {isInsertMode ? '结束研究' : '研究变化'}
-                      </button>
-
-                      <button
-                        type="button"
-                        className={
-                          newGameArmed
-                            ? 'min-h-11 rounded-xl border border-red-400 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 transition-all touch-manipulation'
-                            : actionClass
-                        }
-                        onClick={handleNewGame}
-                        title="开始一盘新棋"
-                      >
-                        <span className="mr-1" aria-hidden="true">＋</span>
-                        {newGameArmed ? '再点确认' : '新棋局'}
-                      </button>
-                    </div>
-
-                    {isEditMode && (
-                      <div className="mt-2 rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-2">
-                        <div className="mb-1.5 flex items-center justify-between">
-                          <span className="text-xs font-semibold text-[var(--ui-text)]">
-                            摆棋工具
-                          </span>
-                          <span className="text-[11px] text-[var(--ui-text-muted)]">
-                            点击棋盘交叉点直接摆放
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-5 gap-1.5">
-                          {SETUP_TOOLS.map(({ tool, label, icon }) => (
-                            <button
-                              key={tool}
-                              type="button"
-                              onClick={() => setEditTool(tool)}
-                              aria-pressed={editTool === tool}
-                              className={[
-                                'min-h-10 rounded-lg border px-2 py-1.5 text-xs font-semibold transition-all',
-                                editTool === tool
-                                  ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] text-[var(--ui-text)]'
-                                  : 'border-[var(--ui-border)] bg-[var(--ui-surface)] text-[var(--ui-text-muted)] hover:bg-[var(--ui-surface-2)]',
-                              ].join(' ')}
-                            >
-                              <span className="mr-1" aria-hidden="true">{icon}</span>
-                              {label}
-                            </button>
-                          ))}
-
-                          <button
-                            type="button"
-                            onClick={toggleEditMode}
-                            className="min-h-10 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface)] px-2 py-1.5 text-xs font-bold text-[var(--ui-text)] hover:bg-[var(--ui-surface-2)]"
-                          >
-                            ✓ 完成
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {isInsertMode && (
-                      <div className="mt-2 flex items-start gap-2 rounded-xl border border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] px-3 py-2">
-                        <span className="mt-0.5 text-[var(--ui-accent)]" aria-hidden="true">◇</span>
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-[var(--ui-text)]">
-                            正在研究变化
-                          </div>
-                          <div className="text-[11px] leading-5 text-[var(--ui-text-muted)]">
-                            继续在棋盘落子即可试下变化；完成后点“结束研究”回到正常对局工具。
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                {mode === 'play' && isInsertMode && (
+                  <div className="mt-1.5 flex items-center justify-center gap-2 rounded-lg bg-[var(--ui-accent-soft)] px-2 py-1.5 text-[11px] text-[var(--ui-text-muted)]">
+                    <span className="font-bold text-[var(--ui-text)]">◇ 研究变化中</span>
+                    <span className="hidden sm:inline">直接继续落子，结束时点“结束研究”</span>
                   </div>
                 )}
 
                 {mode !== 'play' && (
-                  <div className="mt-2.5 border-t border-[var(--ui-border)] pt-2.5">
-                    {analysis && blackWinRate !== null ? (
-                      <div className="grid grid-cols-3 gap-1.5">
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-3 py-2">
-                          <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-faint)]">
-                            黑胜率
-                          </div>
-                          <div className="mt-0.5 text-lg font-bold tabular-nums text-[var(--ui-text)]">
-                            {blackWinRate.toFixed(1)}%
-                          </div>
-                        </div>
+                  <div className="mt-1.5 border-t border-[var(--ui-border)] pt-1.5">
+                    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
+                      {analysis && blackWinRate !== null ? (
+                        <>
+                          <span className="text-[var(--ui-text-muted)]">黑 <b className="tabular-nums text-[var(--ui-text)]">{blackWinRate.toFixed(1)}%</b></span>
+                          <span className="h-3 w-px bg-[var(--ui-border)]" />
+                          <span className="text-[var(--ui-text-muted)]">白 <b className="tabular-nums text-[var(--ui-text)]">{(100 - blackWinRate).toFixed(1)}%</b></span>
+                          <span className="h-3 w-px bg-[var(--ui-border)]" />
+                          <span className="text-[var(--ui-text-muted)]">目差 <b className="tabular-nums text-[var(--ui-text)]">{scoreText(analysis.rootScoreLead)}</b></span>
+                        </>
+                      ) : (
+                        <span className="text-[var(--ui-text-muted)]">正在分析当前局面…</span>
+                      )}
 
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-3 py-2">
-                          <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-faint)]">
-                            白胜率
-                          </div>
-                          <div className="mt-0.5 text-lg font-bold tabular-nums text-[var(--ui-text)]">
-                            {(100 - blackWinRate).toFixed(1)}%
-                          </div>
-                        </div>
-
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] px-3 py-2">
-                          <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--ui-text-faint)]">
-                            当前目差
-                          </div>
-                          <div className="mt-0.5 text-lg font-bold tabular-nums text-[var(--ui-text)]">
-                            {scoreText(analysis.rootScoreLead)}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="rounded-xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface)] px-3 py-3 text-center text-sm text-[var(--ui-text-muted)]">
-                        正在分析当前局面…
-                      </div>
-                    )}
+                      <button type="button" onClick={refreshCurrentMode} className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)]">↻ 重新分析</button>
+                    </div>
 
                     {mode === 'position' && (
-                      <p className="mt-2 text-center text-xs text-[var(--ui-text-muted)]">
-                        局势分析不会显示推荐着，避免干扰你的判断。
-                      </p>
+                      <div className="mt-1 text-center text-[10px] text-[var(--ui-text-faint)]">只显示局势判断，不提示下一手</div>
                     )}
 
                     {mode === 'guide' && (
-                      <div className="mt-2.5">
-                        <div className="mb-1.5 flex items-center justify-between px-0.5">
-                          <span className="text-xs font-bold text-[var(--ui-text)]">
-                            AI 前三推荐
-                          </span>
-                          <span className="text-[11px] text-[var(--ui-text-muted)]">
-                            点击查看最多20手变化
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
-                          {candidates.length > 0 ? (
-                            candidates.map((move, index) => {
-                              const selected =
-                                previewMove?.x === move.x && previewMove?.y === move.y;
-
-                              return (
-                                <button
-                                  key={`${move.x},${move.y}`}
-                                  type="button"
-                                  onClick={() => togglePreview(move)}
-                                  aria-pressed={selected}
-                                  className={[
-                                    'relative min-h-[62px] overflow-hidden rounded-xl border px-3 py-2 text-left transition-all touch-manipulation',
-                                    selected
-                                      ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] shadow-sm'
-                                      : 'border-[var(--ui-border)] bg-[var(--ui-surface)] hover:border-[var(--ui-border-strong)] hover:bg-[var(--ui-surface-2)]',
-                                  ].join(' ')}
-                                >
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div className="flex items-center gap-2">
-                                      <span
-                                        className={[
-                                          'flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-black',
-                                          index === 0
-                                            ? 'bg-[var(--ui-accent)] text-white'
-                                            : 'bg-[var(--ui-surface-2)] text-[var(--ui-text)]',
-                                        ].join(' ')}
-                                      >
-                                        {index + 1}
-                                      </span>
-
-                                      <div>
-                                        <div className="text-base font-black text-[var(--ui-text)]">
-                                          {moveLabel(move, boardSize)}
-                                        </div>
-                                        <div className="text-[10px] text-[var(--ui-text-muted)]">
-                                          {candidateLossText(move, index)}
-                                        </div>
-                                      </div>
-                                    </div>
-
-                                    <span className="rounded-full bg-[var(--ui-surface-2)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ui-text-muted)]">
-                                      {Math.min(20, move.pv?.length ?? 0)} 手
-                                    </span>
-                                  </div>
-
-                                  {selected && (
-                                    <div className="mt-1 text-[10px] font-semibold text-[var(--ui-accent)]">
-                                      变化图已显示 · 再点一次关闭
-                                    </div>
-                                  )}
-                                </button>
-                              );
-                            })
-                          ) : (
-                            <div className="col-span-full rounded-xl border border-dashed border-[var(--ui-border)] px-3 py-3 text-center text-sm text-[var(--ui-text-muted)]">
-                              正在计算前三推荐…
-                            </div>
-                          )}
-                        </div>
+                      <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1">
+                        <span className="mr-1 text-[10px] font-bold text-[var(--ui-text-faint)]">推荐</span>
+                        {candidates.length > 0 ? (
+                          candidates.map((move, index) => {
+                            const selected = previewMove?.x === move.x && previewMove?.y === move.y;
+                            return (
+                              <button
+                                key={`${move.x},${move.y}`}
+                                type="button"
+                                onClick={() => togglePreview(move)}
+                                aria-pressed={selected}
+                                className={[
+                                  'min-h-8 rounded-full border px-2.5 py-1 text-xs font-bold transition-all touch-manipulation',
+                                  selected
+                                    ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] text-[var(--ui-text)]'
+                                    : 'border-[var(--ui-border)] bg-[var(--ui-surface)] text-[var(--ui-text)] hover:border-[var(--ui-border-strong)]',
+                                ].join(' ')}
+                              >
+                                <span className="mr-1 text-[var(--ui-text-muted)]">{index + 1}</span>
+                                {moveLabel(move, boardSize)}
+                                <span className="ml-1 text-[10px] font-medium text-[var(--ui-text-faint)]">{candidateLossText(move, index)}</span>
+                              </button>
+                            );
+                          })
+                        ) : (
+                          <span className="text-[10px] text-[var(--ui-text-muted)]">正在计算推荐…</span>
+                        )}
+                        {previewMove && <span className="ml-1 text-[10px] font-semibold text-[var(--ui-accent)]">已显示20手变化</span>}
                       </div>
                     )}
                   </div>
@@ -721,6 +493,23 @@ jobs:
           store = store.replace("analysisShowOwnership: true,", "analysisShowOwnership: false,", 1)
           store_path.write_text(store, encoding="utf-8")
 
+          # ---------- 手机旧顶部栏默认关闭 ----------
+          mobile_layout_path = root / "src" / "components" / "Layout.tsx"
+          mobile_layout_text = mobile_layout_path.read_text(encoding="utf-8")
+          topbar_pattern = re.compile(
+              r"  const \[topBarOpen, setTopBarOpen\] = useState\(\(\) => \{\n"
+              r"    return readLocalStorage\('web-katrain:top_bar_open:v1'\) !== 'false';\n"
+              r"  \}\);"
+          )
+          mobile_layout_text, topbar_count = topbar_pattern.subn(
+              "  const [topBarOpen, setTopBarOpen] = useState(false);",
+              mobile_layout_text,
+              count=1
+          )
+          if topbar_count != 1:
+              print("mobile top bar patch skipped")
+          mobile_layout_path.write_text(mobile_layout_text, encoding="utf-8")
+
           # ---------- 棋盘上 AI 推荐最多只显示前三 ----------
           hints_path = root / "src" / "utils" / "analysisHints.ts"
           hints = hints_path.read_text(encoding="utf-8")
@@ -802,41 +591,98 @@ jobs:
 
           layout_path.write_text(layout_text, encoding="utf-8")
 
-          # ---------- 私人版界面清理与美化 ----------
+          # ---------- v5 极简界面 ----------
           index_css_path = root / "src" / "index.css"
           private_css = r'''
-          /* Private Go Board: the Chinese control dock replaces legacy action rails. */
+          html,
+          body,
+          #root {
+            background: color-mix(in srgb, #f7f4ed 72%, var(--ui-bg)) !important;
+          }
+
+          .wk-dashboard {
+            --header-h: 0px !important;
+            --sidebar-w: 0px !important;
+            --library-w: 0px !important;
+            --commandbar-reserve: 0px !important;
+            --stage-pad: 8px !important;
+            grid-template-rows: minmax(0, 1fr) !important;
+            background: transparent !important;
+          }
+
+          .wk-dashboard .header,
+          .wk-dashboard .library,
+          .wk-dashboard .sidebar,
+          .wk-dashboard .edge-toggle,
+          .wk-dashboard .hero-card,
+          .wk-dashboard .gamestrip,
+          .wk-dashboard .commandbar,
           .wk-dashboard .navbar {
             display: none !important;
           }
 
-          .mobile-bottom-controls {
+          .wk-dashboard .body {
+            grid-row: 1 !important;
+            grid-template-columns: minmax(0, 1fr) !important;
+          }
+
+          .wk-dashboard .board-col {
+            grid-column: 1 / -1 !important;
+            background: transparent !important;
+          }
+
+          .wk-dashboard .board-stage {
+            padding: 8px 14px 12px !important;
+            background: transparent !important;
+          }
+
+          [data-edit-toolbar],
+          .mobile-bottom-controls,
+          .mobile-tabbar {
             display: none !important;
           }
 
           :root {
             --mobile-bottom-controls-height: 0px !important;
+            --mobile-tabbar-height: 0px !important;
           }
 
-          [data-edit-toolbar] {
-            display: none !important;
+          .personal-mode-dock {
+            flex: none;
           }
 
-          .wk-dashboard .analyze-toggle {
-            display: none !important;
+          .personal-mode-dock button {
+            -webkit-tap-highlight-color: transparent;
           }
 
           .personal-mode-dock button:focus-visible {
-            outline: 2px solid color-mix(in srgb, var(--ui-accent) 65%, transparent);
+            outline: 2px solid color-mix(in srgb, var(--ui-accent) 58%, transparent);
             outline-offset: 2px;
+          }
+
+          @media (min-width: 900px) {
+            .wk-dashboard .board-stage {
+              padding-inline: clamp(18px, 4vw, 64px) !important;
+            }
           }
 
           @media (max-width: 639px) {
             .personal-mode-dock {
-              border-radius: 14px !important;
+              width: calc(100vw - 12px) !important;
               margin-top: 6px !important;
-              margin-bottom: 8px !important;
-              padding: 8px !important;
+              margin-bottom: 5px !important;
+              border-radius: 11px !important;
+              padding: 6px !important;
+              box-shadow: 0 4px 18px rgba(15, 23, 42, 0.06) !important;
+            }
+
+            .mobile-board-shell {
+              padding-top: 4px !important;
+            }
+
+            .mobile-board-canvas {
+              padding-top: 2px !important;
+              padding-bottom: 2px !important;
             }
           }
           '''
@@ -851,7 +697,7 @@ jobs:
           )
 
           (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "围棋试下私人三模式版\n"
+              "围棋试下 v5 极简三模式版\n"
               "默认：下棋模式，AI关闭\n"
               "下棋工具：悔棋/前进/停一手/摆棋/研究变化/新棋局\n"
               "局势分析：120 visits / 最长2秒 / 胜率+目差\n"
