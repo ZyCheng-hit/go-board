@@ -184,9 +184,6 @@ jobs:
             const canGoBack = Boolean(currentNode.parent);
             const canGoForward = currentNode.children.length > 0;
 
-            const strengthConfig =
-              STRENGTHS.find((item) => item.visits === strength) ?? STRENGTHS[1]!;
-
             const candidates = useMemo(
               () =>
                 [...(analysis?.moves ?? [])]
