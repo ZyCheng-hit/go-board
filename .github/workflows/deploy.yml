@@ -20,6 +20,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # =========================================================
+      # 1. 下载 Web KaTrain
+      # 浏览器本地运行 KataGo 风格 AI，不需要你自己的服务器
+      # =========================================================
       - name: Checkout browser KataGo app
         uses: actions/checkout@v6
         with:
@@ -28,6 +32,9 @@ jobs:
           path: app
           lfs: true
 
+      # =========================================================
+      # 2. 修改成我们的 iPhone 围棋版本
+      # =========================================================
       - name: Customize for iPhone
         shell: bash
         run: |
@@ -38,78 +45,178 @@ jobs:
 
           root = Path("app")
 
-          # App title / iPhone PWA branding.
+          # -----------------------------------------------------
+          # 修改网页名称
+          # -----------------------------------------------------
           index_path = root / "index.html"
           html = index_path.read_text(encoding="utf-8")
-          html = html.replace('<html lang="en">', '<html lang="zh-Hans">')
-          html = html.replace('<title>Web KaTrain</title>', '<title>围棋试下</title>')
-          html = html.replace('content="Web KaTrain"', 'content="围棋试下"')
+
+          html = html.replace(
+              '<html lang="en">',
+              '<html lang="zh-Hans">'
+          )
+
+          html = html.replace(
+              '<title>Web KaTrain</title>',
+              '<title>围棋试下</title>'
+          )
+
+          html = html.replace(
+              'content="Web KaTrain"',
+              'content="围棋试下"'
+          )
+
           html = html.replace(
               'content="Web KaTrain is a browser-native Go study board with SGF editing, analysis, library storage, and offline-ready review tools."',
               'content="iPhone 围棋摆棋、悔棋、试下与浏览器本地 KataGo 分析。"'
           )
-          index_path.write_text(html, encoding="utf-8")
 
-          manifest_path = root / "public" / "manifest.webmanifest"
-          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-          manifest["name"] = "围棋试下"
-          manifest["short_name"] = "围棋"
-          manifest["description"] = "iPhone 围棋摆棋、悔棋、试下与浏览器本地 KataGo 分析。"
-          manifest_path.write_text(
-              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-              encoding="utf-8",
+          index_path.write_text(
+              html,
+              encoding="utf-8"
           )
 
-          # Phone-oriented defaults:
-          # - Chinese UI
-          # - 250 visits instead of desktop-oriented 5000
-          # - at most 4 seconds per analysis
-          # - smaller batch / fewer candidate labels
+          # -----------------------------------------------------
+          # 修改 PWA 名称
+          # -----------------------------------------------------
+          manifest_path = root / "public" / "manifest.webmanifest"
+
+          manifest = json.loads(
+              manifest_path.read_text(encoding="utf-8")
+          )
+
+          manifest["name"] = "围棋试下"
+          manifest["short_name"] = "围棋"
+
+          manifest["description"] = (
+              "iPhone 围棋摆棋、悔棋、试下与浏览器本地 KataGo 分析。"
+          )
+
+          manifest_path.write_text(
+              json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  indent=2
+              ) + "\n",
+              encoding="utf-8"
+          )
+
+          # -----------------------------------------------------
+          # 修改 AI 默认参数
+          # 电脑版本默认比较重
+          # 这里针对 iPhone 降低运算量
+          # -----------------------------------------------------
           store_path = root / "src" / "store" / "gameStore.ts"
-          store = store_path.read_text(encoding="utf-8")
+
+          store = store_path.read_text(
+              encoding="utf-8"
+          )
 
           patches = [
-              (r"export const DEFAULT_KATAGO_VISITS\s*=\s*\d+;",
-               "export const DEFAULT_KATAGO_VISITS = 250;"),
-              (r"katagoMaxTimeMs:\s*\d+,",
-               "katagoMaxTimeMs: 4000,"),
-              (r"katagoBatchSize:\s*\d+,",
-               "katagoBatchSize: 8,"),
-              (r"katagoTopK:\s*\d+,",
-               "katagoTopK: 5,"),
+              (
+                  r"export const DEFAULT_KATAGO_VISITS\s*=\s*\d+;",
+                  "export const DEFAULT_KATAGO_VISITS = 250;"
+              ),
+              (
+                  r"katagoMaxTimeMs:\s*\d+,",
+                  "katagoMaxTimeMs: 4000,"
+              ),
+              (
+                  r"katagoBatchSize:\s*\d+,",
+                  "katagoBatchSize: 8,"
+              ),
+              (
+                  r"katagoTopK:\s*\d+,",
+                  "katagoTopK: 5,"
+              ),
           ]
-          for pattern, replacement in patches:
-              store, count = re.subn(pattern, replacement, store, count=1)
-              print(f"{pattern}: {'patched' if count else 'not found; kept upstream default'}")
 
+          for pattern, replacement in patches:
+              store, count = re.subn(
+                  pattern,
+                  replacement,
+                  store,
+                  count=1
+              )
+
+              if count:
+                  print("Patched:", pattern)
+              else:
+                  print("Not found, keeping upstream default:", pattern)
+
+          # -----------------------------------------------------
+          # 默认语言改成简体中文
+          # -----------------------------------------------------
           store = store.replace(
               "appLocale: getPreferredAppLocaleId(),",
               "appLocale: 'zh',",
-              1,
+              1
           )
-          # Keep the board cleaner by default; ownership can still be enabled in analysis settings.
+
+          # -----------------------------------------------------
+          # 因为上面已经不再调用 getPreferredAppLocaleId，
+          # 必须同时删除这个 import。
+          #
+          # 这是上一版 GitHub Actions 构建失败的原因。
+          # -----------------------------------------------------
+          store = store.replace(
+              "import { getPreferredAppLocaleId, isAppLocaleId } from '../utils/locales';",
+              "import { isAppLocaleId } from '../utils/locales';",
+              1
+          )
+
+          # -----------------------------------------------------
+          # 默认先不显示整盘 ownership 热力图
+          # 手机界面更干净，也能降低一点负担。
+          # 以后仍然可以在设置里打开。
+          # -----------------------------------------------------
           store = store.replace(
               "analysisShowOwnership: true,",
               "analysisShowOwnership: false,",
-              1,
+              1
           )
-          store_path.write_text(store, encoding="utf-8")
 
-          # Keep upstream license in the deployed site.
-          license_text = (root / "LICENSE").read_text(encoding="utf-8")
-          (root / "public" / "WEB_KATRAIN_LICENSE.txt").write_text(
+          store_path.write_text(
+              store,
+              encoding="utf-8"
+          )
+
+          # -----------------------------------------------------
+          # 保留 Web KaTrain 原项目 MIT License
+          # -----------------------------------------------------
+          license_text = (
+              root / "LICENSE"
+          ).read_text(
+              encoding="utf-8"
+          )
+
+          (
+              root / "public" / "WEB_KATRAIN_LICENSE.txt"
+          ).write_text(
               license_text,
-              encoding="utf-8",
+              encoding="utf-8"
           )
 
-          (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "Private iPhone Go board build based on Web KaTrain commit "
-              "35a5113f9b3ade5ce2116884f3a2d00e02c7c77b\n"
-              "Default local analysis: 250 visits, max 4 seconds, WebGPU preferred.\n",
-              encoding="utf-8",
+          # -----------------------------------------------------
+          # 写一个版本说明
+          # -----------------------------------------------------
+          (
+              root / "public" / "GO_BOARD_BUILD.txt"
+          ).write_text(
+              "私人 iPhone 围棋 AI 版本\n"
+              "Base: Web KaTrain\n"
+              "Default analysis: 250 visits\n"
+              "Maximum analysis time: 4 seconds\n"
+              "Backend: WebGPU preferred, WASM/CPU fallback\n",
+              encoding="utf-8"
           )
+
+          print("iPhone customization complete.")
           PY
 
+      # =========================================================
+      # 3. 安装 Node.js
+      # =========================================================
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
@@ -117,24 +224,46 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
 
+      # =========================================================
+      # 4. 安装 Web KaTrain 所需依赖
+      # =========================================================
       - name: Install dependencies
         working-directory: app
         run: npm ci
 
+      # =========================================================
+      # 5. 编译网页 App
+      #
+      # 最终网址：
+      # https://zycheng-hit.github.io/go-board/
+      # =========================================================
       - name: Build iPhone PWA
         working-directory: app
         env:
           VITE_BASE_URL: /go-board/
         run: npm run build
 
+      # =========================================================
+      # 6. 配置 GitHub Pages
+      # =========================================================
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      # =========================================================
+      # 7. 上传编译后的网页
+      # =========================================================
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
           path: app/dist
 
+  # ===========================================================
+  # 8. 正式部署
+  # ===========================================================
   deploy:
     needs: build
     runs-on: ubuntu-latest
+
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
