@@ -28,6 +28,24 @@ jobs:
           path: app
           lfs: true
 
+      - name: Download strong KataGo b18 model
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/public/models
+          MODEL_PATH="app/public/models/katago-b18.bin.gz"
+          MODEL_URL="https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b18c384nbt-s9996604416-d4316597426.bin.gz"
+
+          if [ ! -s "$MODEL_PATH" ]; then
+            echo "Downloading KataGo b18 model (~96 MB)..."
+            curl -L --fail --retry 3 --retry-delay 3 \
+              --output "$MODEL_PATH" \
+              "$MODEL_URL"
+          fi
+
+          test -s "$MODEL_PATH"
+          ls -lh "$MODEL_PATH"
+
       - name: Build private Chinese three-mode UI
         shell: bash
         run: |
@@ -65,6 +83,41 @@ jobs:
           import { useGameStore } from '../store/gameStore';
           import { usePersonalModeStore, type PersonalMode } from '../store/personalModeStore';
           import type { CandidateMove, EditTool } from '../types';
+          import { publicUrl } from '../utils/publicUrl';
+
+          type AnalysisStrength = 1000 | 10000 | 50000;
+
+          const B18_MODEL_URL = publicUrl('models/katago-b18.bin.gz');
+
+          const STRENGTHS: Array<{
+            visits: AnalysisStrength;
+            label: string;
+            shortLabel: string;
+            maxTimeMs: number;
+            description: string;
+          }> = [
+            {
+              visits: 1000,
+              label: '快速',
+              shortLabel: '1k',
+              maxTimeMs: 30000,
+              description: '1,000 visits',
+            },
+            {
+              visits: 10000,
+              label: '强力',
+              shortLabel: '10k',
+              maxTimeMs: 180000,
+              description: '10,000 visits',
+            },
+            {
+              visits: 50000,
+              label: '极限',
+              shortLabel: '50k',
+              maxTimeMs: 300000,
+              description: '50,000 visits',
+            },
+          ];
 
           function moveLabel(move: CandidateMove, boardSize: number): string {
             if (move.x < 0 || move.y < 0) return '虚手';
@@ -97,16 +150,22 @@ jobs:
             const isAnalysisMode = useGameStore((state) => state.isAnalysisMode);
             const toggleAnalysisMode = useGameStore((state) => state.toggleAnalysisMode);
             const runAnalysis = useGameStore((state) => state.runAnalysis);
+            const stopAnalysis = useGameStore((state) => state.stopAnalysis);
             const updateSettings = useGameStore((state) => state.updateSettings);
             const engineStatus = useGameStore((state) => state.engineStatus);
+            const engineBackend = useGameStore((state) => state.engineBackend);
+            const engineModelName = useGameStore((state) => state.engineModelName);
+
             const navigateBack = useGameStore((state) => state.navigateBack);
             const navigateForward = useGameStore((state) => state.navigateForward);
             const passTurn = useGameStore((state) => state.passTurn);
             const resetGame = useGameStore((state) => state.resetGame);
+
             const isEditMode = useGameStore((state) => state.isEditMode);
             const toggleEditMode = useGameStore((state) => state.toggleEditMode);
             const editTool = useGameStore((state) => state.editTool);
             const setEditTool = useGameStore((state) => state.setEditTool);
+
             const isInsertMode = useGameStore((state) => state.isInsertMode);
             const toggleInsertMode = useGameStore((state) => state.toggleInsertMode);
 
@@ -115,12 +174,18 @@ jobs:
             const setMode = usePersonalModeStore((state) => state.setMode);
             const setPreviewMove = usePersonalModeStore((state) => state.setPreviewMove);
 
+            // 强力档作为默认。需要最高搜索时手动切到 50k。
+            const [strength, setStrength] = useState<AnalysisStrength>(10000);
             const [newGameArmed, setNewGameArmed] = useState(false);
+
             const analysis = currentNode.analysis ?? null;
             const boardSize = currentNode.gameState.board.length;
             const moveNumber = currentNode.gameState.moveHistory.length;
             const canGoBack = Boolean(currentNode.parent);
             const canGoForward = currentNode.children.length > 0;
+
+            const strengthConfig =
+              STRENGTHS.find((item) => item.visits === strength) ?? STRENGTHS[1]!;
 
             const candidates = useMemo(
               () =>
@@ -144,32 +209,79 @@ jobs:
               if (isInsertMode) toggleInsertMode();
             };
 
-            const runForMode = (nextMode: Exclude<PersonalMode, 'play'>) => {
+            const analysisOptions = (
+              nextMode: Exclude<PersonalMode, 'play'>,
+              visits: AnalysisStrength
+            ) => {
               const guide = nextMode === 'guide';
-              stopBoardTools();
+              const cfg = STRENGTHS.find((item) => item.visits === visits) ?? STRENGTHS[1]!;
+
+              return {
+                guide,
+                visits,
+                maxTimeMs: cfg.maxTimeMs,
+                batchSize: 8,
+                topK: guide ? 3 : 1,
+                analysisPvLen: guide ? 20 : 0,
+              };
+            };
+
+            const configureStrongEngine = (
+              nextMode: Exclude<PersonalMode, 'play'>,
+              visits: AnalysisStrength
+            ) => {
+              const opts = analysisOptions(nextMode, visits);
+
               updateSettings({
+                // 浏览器强模型：KataGo b18 ~96MB
+                katagoModelUrl: B18_MODEL_URL,
+                katagoBackend: 'webgpu',
+
+                // 更接近正式分析，而不是训练/随机探索。
+                katagoWideRootNoise: 0,
+                katagoRootPolicyTemperature: 1,
+                katagoNnRandomize: false,
+                katagoReuseTree: true,
+
                 analysisShowChildren: false,
                 analysisShowEval: false,
-                analysisShowHints: guide,
+                analysisShowHints: opts.guide,
                 analysisShowPolicy: false,
                 analysisShowOwnership: false,
                 showAnalysisBar: false,
-                katagoVisits: guide ? 250 : 120,
-                katagoMaxTimeMs: guide ? 4000 : 2000,
-                katagoBatchSize: guide ? 8 : 4,
-                katagoTopK: guide ? 3 : 1,
-                katagoAnalysisPvLen: guide ? 20 : 0,
+
+                katagoVisits: opts.visits,
+                katagoMaxTimeMs: opts.maxTimeMs,
+                katagoBatchSize: opts.batchSize,
+                katagoTopK: opts.topK,
+                katagoAnalysisPvLen: opts.analysisPvLen,
               });
+
+              return opts;
+            };
+
+            const runForMode = (
+              nextMode: Exclude<PersonalMode, 'play'>,
+              visits: AnalysisStrength = strength
+            ) => {
+              stopBoardTools();
+              const opts = configureStrongEngine(nextMode, visits);
+
               if (!isAnalysisMode) {
+                // toggleAnalysisMode 会使用刚刚同步写入的 b18 / visits 设置。
                 toggleAnalysisMode();
               } else {
+                stopAnalysis();
                 void runAnalysis({
                   force: true,
-                  visits: guide ? 250 : 120,
-                  maxTimeMs: guide ? 4000 : 2000,
-                  batchSize: guide ? 8 : 4,
-                  topK: guide ? 3 : 1,
-                  analysisPvLen: guide ? 20 : 0,
+                  visits: opts.visits,
+                  maxTimeMs: opts.maxTimeMs,
+                  batchSize: opts.batchSize,
+                  topK: opts.topK,
+                  analysisPvLen: opts.analysisPvLen,
+                  wideRootNoise: 0,
+                  nnRandomize: false,
+                  reuseTree: true,
                 });
               }
             };
@@ -177,6 +289,7 @@ jobs:
             const chooseMode = (nextMode: PersonalMode) => {
               setPreviewMove(null);
               setMode(nextMode);
+
               if (nextMode === 'play') {
                 updateSettings({
                   analysisShowChildren: false,
@@ -186,10 +299,21 @@ jobs:
                   analysisShowOwnership: false,
                   showAnalysisBar: false,
                 });
+
                 if (isAnalysisMode) toggleAnalysisMode();
                 return;
               }
+
               runForMode(nextMode);
+            };
+
+            const changeStrength = (nextStrength: AnalysisStrength) => {
+              setStrength(nextStrength);
+              setPreviewMove(null);
+
+              if (mode === 'position' || mode === 'guide') {
+                runForMode(mode, nextStrength);
+              }
             };
 
             const openSetup = () => {
@@ -212,9 +336,11 @@ jobs:
                 setNewGameArmed(true);
                 return;
               }
+
               if (isAnalysisMode) toggleAnalysisMode();
               if (isEditMode) toggleEditMode();
               if (isInsertMode) toggleInsertMode();
+
               setPreviewMove(null);
               setMode('play');
               resetGame();
@@ -222,8 +348,17 @@ jobs:
             };
 
             const togglePreview = (move: CandidateMove) => {
-              const selected = previewMove?.x === move.x && previewMove?.y === move.y;
-              setPreviewMove(selected ? null : { ...move, pv: move.pv?.slice(0, 20) });
+              const selected =
+                previewMove?.x === move.x && previewMove?.y === move.y;
+
+              setPreviewMove(
+                selected
+                  ? null
+                  : {
+                      ...move,
+                      pv: move.pv?.slice(0, 20),
+                    }
+              );
             };
 
             const blackWinRate =
@@ -264,8 +399,10 @@ jobs:
                 : engineStatus === 'error'
                   ? 'AI异常'
                   : engineStatus === 'loading'
-                    ? '加载中…'
-                    : 'KataGo就绪';
+                    ? 'b18加载中…'
+                    : engineStatus === 'ready'
+                      ? `${engineBackend === 'webgpu' ? 'WebGPU' : engineBackend ?? 'AI'} · b18`
+                      : '准备分析';
 
             return (
               <section
@@ -274,7 +411,9 @@ jobs:
               >
                 <div className="flex min-w-0 items-center gap-2">
                   <div className="hidden min-w-[105px] shrink-0 sm:block">
-                    <div className="truncate text-sm font-black tracking-tight text-[var(--ui-text)]">围棋试下</div>
+                    <div className="truncate text-sm font-black tracking-tight text-[var(--ui-text)]">
+                      围棋试下
+                    </div>
                     <div className="truncate text-[10px] text-[var(--ui-text-faint)]">
                       第{moveNumber}手 · {currentPlayer === 'black' ? '黑棋行棋' : '白棋行棋'}
                     </div>
@@ -294,7 +433,9 @@ jobs:
                           ? 'bg-[var(--ui-text-faint)]'
                           : engineStatus === 'error'
                             ? 'bg-red-500'
-                            : 'bg-emerald-500',
+                            : engineStatus === 'ready'
+                              ? 'bg-emerald-500'
+                              : 'bg-amber-500',
                       ].join(' ')}
                     />
                     {aiStatus}
@@ -308,7 +449,13 @@ jobs:
                     <button type="button" className={actionClass} onClick={passTurn} disabled={isEditMode}>○ 停一手</button>
                     <button type="button" className={isEditMode ? activeActionClass : actionClass} onClick={openSetup} aria-pressed={isEditMode}>◐ {isEditMode ? '结束摆棋' : '摆棋'}</button>
                     <button type="button" className={isInsertMode ? activeActionClass : actionClass} onClick={toggleStudy} aria-pressed={isInsertMode}>◇ {isInsertMode ? '结束研究' : '研究变化'}</button>
-                    <button type="button" onClick={handleNewGame} className={newGameArmed ? 'min-h-9 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700' : actionClass}>＋ {newGameArmed ? '再点确认' : '新棋局'}</button>
+                    <button
+                      type="button"
+                      onClick={handleNewGame}
+                      className={newGameArmed ? 'min-h-9 rounded-lg bg-red-50 px-2.5 py-1.5 text-xs font-bold text-red-700' : actionClass}
+                    >
+                      ＋ {newGameArmed ? '再点确认' : '新棋局'}
+                    </button>
                   </div>
                 )}
 
@@ -331,7 +478,13 @@ jobs:
                         {icon} {label}
                       </button>
                     ))}
-                    <button type="button" onClick={toggleEditMode} className="min-h-8 rounded-md px-2 py-1 text-xs font-bold text-[var(--ui-accent)] hover:bg-[var(--ui-surface)]">✓ 完成</button>
+                    <button
+                      type="button"
+                      onClick={toggleEditMode}
+                      className="min-h-8 rounded-md px-2 py-1 text-xs font-bold text-[var(--ui-accent)] hover:bg-[var(--ui-surface)]"
+                    >
+                      ✓ 完成
+                    </button>
                   </div>
                 )}
 
@@ -347,29 +500,82 @@ jobs:
                     <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs">
                       {analysis && blackWinRate !== null ? (
                         <>
-                          <span className="text-[var(--ui-text-muted)]">黑 <b className="tabular-nums text-[var(--ui-text)]">{blackWinRate.toFixed(1)}%</b></span>
+                          <span className="text-[var(--ui-text-muted)]">
+                            黑 <b className="tabular-nums text-[var(--ui-text)]">{blackWinRate.toFixed(1)}%</b>
+                          </span>
                           <span className="h-3 w-px bg-[var(--ui-border)]" />
-                          <span className="text-[var(--ui-text-muted)]">白 <b className="tabular-nums text-[var(--ui-text)]">{(100 - blackWinRate).toFixed(1)}%</b></span>
+                          <span className="text-[var(--ui-text-muted)]">
+                            白 <b className="tabular-nums text-[var(--ui-text)]">{(100 - blackWinRate).toFixed(1)}%</b>
+                          </span>
                           <span className="h-3 w-px bg-[var(--ui-border)]" />
-                          <span className="text-[var(--ui-text-muted)]">目差 <b className="tabular-nums text-[var(--ui-text)]">{scoreText(analysis.rootScoreLead)}</b></span>
+                          <span className="text-[var(--ui-text-muted)]">
+                            目差 <b className="tabular-nums text-[var(--ui-text)]">{scoreText(analysis.rootScoreLead)}</b>
+                          </span>
                         </>
                       ) : (
-                        <span className="text-[var(--ui-text-muted)]">正在分析当前局面…</span>
+                        <span className="text-[var(--ui-text-muted)]">
+                          {engineStatus === 'loading'
+                            ? '首次加载 b18 强模型（约96MB）…'
+                            : '正在分析当前局面…'}
+                        </span>
                       )}
 
-                      <button type="button" onClick={refreshCurrentMode} className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)]">↻ 重新分析</button>
+                      <button
+                        type="button"
+                        onClick={refreshCurrentMode}
+                        className="rounded-md px-2 py-0.5 text-[10px] font-bold text-[var(--ui-accent)] hover:bg-[var(--ui-accent-soft)]"
+                      >
+                        ↻ 重新分析
+                      </button>
+                    </div>
+
+                    <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1">
+                      <span className="mr-1 text-[10px] font-bold text-[var(--ui-text-faint)]">
+                        算力
+                      </span>
+
+                      {STRENGTHS.map((item) => (
+                        <button
+                          key={item.visits}
+                          type="button"
+                          onClick={() => changeStrength(item.visits)}
+                          aria-pressed={strength === item.visits}
+                          title={`${item.label}：${item.description}`}
+                          className={[
+                            'min-h-7 rounded-full border px-2 py-0.5 text-[10px] font-bold transition-all',
+                            strength === item.visits
+                              ? 'border-[var(--ui-text)] bg-[var(--ui-text)] text-[var(--ui-bg)]'
+                              : 'border-[var(--ui-border)] bg-[var(--ui-surface)] text-[var(--ui-text-muted)] hover:text-[var(--ui-text)]',
+                          ].join(' ')}
+                        >
+                          {item.label} {item.shortLabel}
+                        </button>
+                      ))}
+
+                      {strength === 50000 && (
+                        <span className="ml-1 text-[10px] font-semibold text-amber-600">
+                          极限档最长可运行5分钟
+                        </span>
+                      )}
                     </div>
 
                     {mode === 'position' && (
-                      <div className="mt-1 text-center text-[10px] text-[var(--ui-text-faint)]">只显示局势判断，不提示下一手</div>
+                      <div className="mt-1 text-center text-[10px] text-[var(--ui-text-faint)]">
+                        b18 强模型 · 只显示局势判断，不提示下一手
+                      </div>
                     )}
 
                     {mode === 'guide' && (
                       <div className="mt-1.5 flex flex-wrap items-center justify-center gap-1">
-                        <span className="mr-1 text-[10px] font-bold text-[var(--ui-text-faint)]">推荐</span>
+                        <span className="mr-1 text-[10px] font-bold text-[var(--ui-text-faint)]">
+                          推荐
+                        </span>
+
                         {candidates.length > 0 ? (
                           candidates.map((move, index) => {
-                            const selected = previewMove?.x === move.x && previewMove?.y === move.y;
+                            const selected =
+                              previewMove?.x === move.x && previewMove?.y === move.y;
+
                             return (
                               <button
                                 key={`${move.x},${move.y}`}
@@ -385,16 +591,30 @@ jobs:
                               >
                                 <span className="mr-1 text-[var(--ui-text-muted)]">{index + 1}</span>
                                 {moveLabel(move, boardSize)}
-                                <span className="ml-1 text-[10px] font-medium text-[var(--ui-text-faint)]">{candidateLossText(move, index)}</span>
+                                <span className="ml-1 text-[10px] font-medium text-[var(--ui-text-faint)]">
+                                  {candidateLossText(move, index)}
+                                </span>
                               </button>
                             );
                           })
                         ) : (
-                          <span className="text-[10px] text-[var(--ui-text-muted)]">正在计算推荐…</span>
+                          <span className="text-[10px] text-[var(--ui-text-muted)]">
+                            正在计算前三推荐…
+                          </span>
                         )}
-                        {previewMove && <span className="ml-1 text-[10px] font-semibold text-[var(--ui-accent)]">已显示20手变化</span>}
+
+                        {previewMove && (
+                          <span className="ml-1 text-[10px] font-semibold text-[var(--ui-accent)]">
+                            已显示20手变化
+                          </span>
+                        )}
                       </div>
                     )}
+
+                    <div className="mt-1 text-center text-[9px] text-[var(--ui-text-faint)]">
+                      模型：KataGo b18 · WebGPU优先
+                      {engineModelName ? ` · ${engineModelName}` : ''}
+                    </div>
                   </div>
                 )}
               </section>
@@ -491,6 +711,13 @@ jobs:
           store = store.replace("analysisShowEval: true,", "analysisShowEval: false,", 1)
           store = store.replace("analysisShowHints: true,", "analysisShowHints: false,", 1)
           store = store.replace("analysisShowOwnership: true,", "analysisShowOwnership: false,", 1)
+          # v6：新安装默认使用部署内置的 b18 强模型。
+          store = store.replace(
+              "katagoModelUrl: publicUrl(KATAGO_SMALL_MODEL_PATH),",
+              "katagoModelUrl: publicUrl('models/katago-b18.bin.gz'),",
+              1
+          )
+
           store_path.write_text(store, encoding="utf-8")
 
           # ---------- 手机旧顶部栏默认关闭 ----------
@@ -697,11 +924,13 @@ jobs:
           )
 
           (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "围棋试下 v5 极简三模式版\n"
+              "围棋试下 v6 浏览器最强版\n"
               "默认：下棋模式，AI关闭\n"
               "下棋工具：悔棋/前进/停一手/摆棋/研究变化/新棋局\n"
-              "局势分析：120 visits / 最长2秒 / 胜率+目差\n"
-              "AI指导：250 visits / 最长4秒 / Top3 / PV最多20手\n"
+              "模型：KataGo b18 ~96MB / WebGPU优先\n"
+              "三档算力：1k / 10k / 50k visits\n"
+              "极限档：最多50,000 visits / 最长300秒\n"
+              "AI指导：Top3 / PV最多20手\n"
               "AI：浏览器本地 KataGo 风格引擎，WebGPU 优先\n",
               encoding="utf-8"
           )
