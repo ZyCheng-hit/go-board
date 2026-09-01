@@ -431,7 +431,6 @@ jobs:
           replace_once(
               layout_path,
               "import { CandidatePvTiles } from './CandidatePvTiles';",
-              "import { CandidatePvTiles } from './CandidatePvTiles';\n"
               "import { PersonalModeDock } from './PersonalModeDock';\n"
               "import { usePersonalModeStore } from '../store/personalModeStore';",
               "Layout imports"
@@ -463,11 +462,22 @@ jobs:
           )
 
           # 原版 CandidatePvTiles 在手机上会重复显示，我们自己的中文推荐卡片已替代它。
-          layout_text = layout_text.replace(
-              "{isMobile && showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode && (",
-              "{false && isMobile && showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode && (",
-              1
+          # 直接删除整段 JSX，避免 TypeScript 继续检查 false && 后面的不可达代码。
+          candidate_pattern = re.compile(
+              r"\n\s*\{isMobile && showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode && \(\n"
+              r"\s*<CandidatePvTiles\n"
+              r"\s*pinnedKey=\{reportHoverMove \? `\$\{reportHoverMove\.x\},\$\{reportHoverMove\.y\}` : null\}\n"
+              r"\s*onPin=\{setReportHoverMove\}\n"
+              r"\s*/>\n"
+              r"\s*\)\}"
           )
+          layout_text, removed_count = candidate_pattern.subn(
+              "\n            {/* 私人三模式版：候选变化由 PersonalModeDock 控制 */}",
+              layout_text,
+              count=1
+          )
+          if removed_count != 1:
+              raise RuntimeError(f"Expected to remove one CandidatePvTiles block, got {removed_count}")
 
           # 三模式中文控制层对电脑和手机都显示。
           desktop_anchor = "      {isDesktop && (\n"
