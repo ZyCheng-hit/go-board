@@ -1,4 +1,4 @@
-name: Deploy Go Board AI CN
+name: Deploy Go Board AI
 
 on:
   push:
@@ -28,9 +28,312 @@ jobs:
           path: app
           lfs: true
 
-      - name: Customize Chinese private version
+      - name: Build private Chinese three-mode UI
         shell: bash
         run: |
+          set -euo pipefail
+
+          # -------------------------------------------------------
+          # 1. 私人模式状态
+          # -------------------------------------------------------
+          cat > app/src/store/personalModeStore.ts <<'EOF'
+          import { create } from 'zustand';
+          import type { CandidateMove } from '../types';
+
+          export type PersonalMode = 'play' | 'position' | 'guide';
+
+          type PersonalModeState = {
+            mode: PersonalMode;
+            previewMove: CandidateMove | null;
+            setMode: (mode: PersonalMode) => void;
+            setPreviewMove: (move: CandidateMove | null) => void;
+          };
+
+          export const usePersonalModeStore = create<PersonalModeState>((set) => ({
+            mode: 'play',
+            previewMove: null,
+            setMode: (mode) => set({ mode, previewMove: null }),
+            setPreviewMove: (previewMove) => set({ previewMove }),
+          }));
+          EOF
+
+          # -------------------------------------------------------
+          # 2. 中文三模式控制条
+          # -------------------------------------------------------
+          cat > app/src/components/PersonalModeDock.tsx <<'EOF'
+          import React, { useEffect, useMemo } from 'react';
+          import { useGameStore } from '../store/gameStore';
+          import {
+            usePersonalModeStore,
+            type PersonalMode,
+          } from '../store/personalModeStore';
+          import type { CandidateMove } from '../types';
+
+          function moveLabel(move: CandidateMove, boardSize: number): string {
+            if (move.x < 0 || move.y < 0) return '虚手';
+            const column = String.fromCharCode(65 + (move.x >= 8 ? move.x + 1 : move.x));
+            return `${column}${boardSize - move.y}`;
+          }
+
+          function scoreText(scoreLead: number): string {
+            if (!Number.isFinite(scoreLead) || Math.abs(scoreLead) < 0.05) return '目差：接近持平';
+            const side = scoreLead > 0 ? '黑' : '白';
+            return `目差：${side} +${Math.abs(scoreLead).toFixed(1)}目`;
+          }
+
+          function candidateLossText(move: CandidateMove, index: number): string {
+            if (index === 0) return '最佳';
+            const loss = Math.max(0, move.relativePointsLost ?? move.pointsLost ?? 0);
+            return `约损失 ${loss.toFixed(1)}目`;
+          }
+
+          export const PersonalModeDock: React.FC = () => {
+            const currentNode = useGameStore((state) => state.currentNode);
+            const isAnalysisMode = useGameStore((state) => state.isAnalysisMode);
+            const toggleAnalysisMode = useGameStore((state) => state.toggleAnalysisMode);
+            const runAnalysis = useGameStore((state) => state.runAnalysis);
+            const updateSettings = useGameStore((state) => state.updateSettings);
+            const engineStatus = useGameStore((state) => state.engineStatus);
+
+            const mode = usePersonalModeStore((state) => state.mode);
+            const previewMove = usePersonalModeStore((state) => state.previewMove);
+            const setMode = usePersonalModeStore((state) => state.setMode);
+            const setPreviewMove = usePersonalModeStore((state) => state.setPreviewMove);
+
+            const analysis = currentNode.analysis ?? null;
+            const boardSize = currentNode.gameState.board.length;
+
+            const candidates = useMemo(
+              () =>
+                [...(analysis?.moves ?? [])]
+                  .filter((move) => move.x >= 0 && move.y >= 0)
+                  .sort((a, b) => a.order - b.order || b.visits - a.visits)
+                  .slice(0, 3),
+              [analysis]
+            );
+
+            useEffect(() => {
+              setPreviewMove(null);
+            }, [currentNode.id, setPreviewMove]);
+
+            const runForMode = (nextMode: Exclude<PersonalMode, 'play'>) => {
+              const guide = nextMode === 'guide';
+
+              updateSettings({
+                // 两个 AI 模式都关闭旧版杂乱的覆盖层；
+                // AI指导只保留前三推荐着。
+                analysisShowChildren: false,
+                analysisShowEval: false,
+                analysisShowHints: guide,
+                analysisShowPolicy: false,
+                analysisShowOwnership: false,
+                showAnalysisBar: false,
+
+                // 局势分析更轻，AI指导更深。
+                katagoVisits: guide ? 250 : 120,
+                katagoMaxTimeMs: guide ? 4000 : 2000,
+                katagoBatchSize: guide ? 8 : 4,
+                katagoTopK: guide ? 3 : 1,
+                katagoAnalysisPvLen: guide ? 20 : 0,
+              });
+
+              if (!isAnalysisMode) {
+                // toggleAnalysisMode 会在打开时自动分析一次，
+                // 上面的 settings 已经同步写入，所以会使用对应模式的参数。
+                toggleAnalysisMode();
+              } else {
+                void runAnalysis({
+                  force: true,
+                  visits: guide ? 250 : 120,
+                  maxTimeMs: guide ? 4000 : 2000,
+                  batchSize: guide ? 8 : 4,
+                  topK: guide ? 3 : 1,
+                  analysisPvLen: guide ? 20 : 0,
+                });
+              }
+            };
+
+            const chooseMode = (nextMode: PersonalMode) => {
+              setPreviewMove(null);
+              setMode(nextMode);
+
+              if (nextMode === 'play') {
+                updateSettings({
+                  analysisShowChildren: false,
+                  analysisShowEval: false,
+                  analysisShowHints: false,
+                  analysisShowPolicy: false,
+                  analysisShowOwnership: false,
+                  showAnalysisBar: false,
+                });
+                if (isAnalysisMode) toggleAnalysisMode();
+                return;
+              }
+
+              runForMode(nextMode);
+            };
+
+            const togglePreview = (move: CandidateMove) => {
+              const alreadySelected =
+                previewMove?.x === move.x && previewMove?.y === move.y;
+
+              if (alreadySelected) {
+                setPreviewMove(null);
+                return;
+              }
+
+              setPreviewMove({
+                ...move,
+                pv: move.pv?.slice(0, 20),
+              });
+            };
+
+            const blackWinRate =
+              analysis && Number.isFinite(analysis.rootWinRate)
+                ? Math.max(0, Math.min(100, analysis.rootWinRate * 100))
+                : null;
+
+            const activeClass =
+              'bg-[var(--ui-accent)] text-white border-[var(--ui-accent)]';
+            const idleClass =
+              'bg-[var(--ui-surface)] text-[var(--ui-text)] border-[var(--ui-border)] hover:bg-[var(--ui-surface-2)]';
+
+            const modeButtonClass = (target: PersonalMode) =>
+              [
+                'min-h-10 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors touch-manipulation',
+                mode === target ? activeClass : idleClass,
+              ].join(' ');
+
+            return (
+              <section
+                className="personal-mode-dock fixed left-1/2 top-[5.55rem] z-[75] w-[min(94vw,820px)] -translate-x-1/2 rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)]/95 px-2.5 py-2 shadow-lg backdrop-blur-md"
+                aria-label="私人围棋模式"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="grid min-w-0 flex-1 grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      className={modeButtonClass('play')}
+                      onClick={() => chooseMode('play')}
+                    >
+                      下棋模式
+                    </button>
+
+                    <button
+                      type="button"
+                      className={modeButtonClass('position')}
+                      onClick={() => chooseMode('position')}
+                    >
+                      局势分析
+                    </button>
+
+                    <button
+                      type="button"
+                      className={modeButtonClass('guide')}
+                      onClick={() => chooseMode('guide')}
+                    >
+                      AI指导
+                    </button>
+                  </div>
+
+                  <div className="shrink-0 text-xs font-medium text-[var(--ui-text-muted)]">
+                    {mode === 'play'
+                      ? 'AI已关闭'
+                      : engineStatus === 'error'
+                        ? 'AI加载失败'
+                        : engineStatus === 'loading'
+                          ? 'AI加载中…'
+                          : 'KataGo分析中'}
+                  </div>
+                </div>
+
+                {mode !== 'play' && (
+                  <div className="mt-2 border-t border-[var(--ui-border)] pt-2">
+                    {analysis && blackWinRate !== null ? (
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                        <span className="font-semibold text-[var(--ui-text)]">
+                          黑胜率 {blackWinRate.toFixed(1)}%
+                        </span>
+                        <span className="font-semibold text-[var(--ui-text)]">
+                          白胜率 {(100 - blackWinRate).toFixed(1)}%
+                        </span>
+                        <span className="font-semibold text-[var(--ui-text)]">
+                          {scoreText(analysis.rootScoreLead)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-[var(--ui-text-muted)]">
+                        正在分析当前局面…
+                      </div>
+                    )}
+
+                    {mode === 'position' && (
+                      <p className="mt-1 text-xs text-[var(--ui-text-muted)]">
+                        只判断当前胜率和目差，不显示推荐着。
+                      </p>
+                    )}
+
+                    {mode === 'guide' && (
+                      <div className="mt-2">
+                        <div className="mb-1.5 text-xs font-semibold text-[var(--ui-text-muted)]">
+                          AI前三推荐 · 点击任一推荐查看最多20手变化
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+                          {candidates.length > 0 ? (
+                            candidates.map((move, index) => {
+                              const selected =
+                                previewMove?.x === move.x && previewMove?.y === move.y;
+
+                              return (
+                                <button
+                                  key={`${move.x},${move.y}`}
+                                  type="button"
+                                  onClick={() => togglePreview(move)}
+                                  aria-pressed={selected}
+                                  className={[
+                                    'min-h-11 rounded-lg border px-3 py-2 text-left transition-colors touch-manipulation',
+                                    selected
+                                      ? 'border-[var(--ui-accent)] bg-[var(--ui-accent-soft)]'
+                                      : 'border-[var(--ui-border)] bg-[var(--ui-surface-2)] hover:border-[var(--ui-accent)]',
+                                  ].join(' ')}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-bold text-[var(--ui-text)]">
+                                      {index + 1}. {moveLabel(move, boardSize)}
+                                    </span>
+                                    <span className="text-xs text-[var(--ui-text-muted)]">
+                                      {candidateLossText(move, index)}
+                                    </span>
+                                  </div>
+                                  <div className="mt-0.5 text-[11px] text-[var(--ui-text-muted)]">
+                                    {selected
+                                      ? '变化图已显示，再点一次关闭'
+                                      : `${Math.min(20, move.pv?.length ?? 0)}手变化`}
+                                  </div>
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <div className="col-span-full text-sm text-[var(--ui-text-muted)]">
+                              正在计算前三推荐…
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+            );
+          };
+
+          PersonalModeDock.displayName = 'PersonalModeDock';
+          EOF
+
+          # -------------------------------------------------------
+          # 3. 修改现有源码
+          # -------------------------------------------------------
           python - <<'PY'
           from pathlib import Path
           import json
@@ -38,354 +341,163 @@ jobs:
 
           root = Path("app")
 
-          # =====================================================
-          # 1) 基础网页信息
-          # =====================================================
+          def replace_once(path: Path, old: str, new: str, label: str):
+              text = path.read_text(encoding="utf-8")
+              if old not in text:
+                  raise RuntimeError(f"Patch anchor not found: {label}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+              print("patched:", label)
+
+          # ---------- 品牌 ----------
           index_path = root / "index.html"
           html = index_path.read_text(encoding="utf-8")
-
           html = html.replace('<html lang="en">', '<html lang="zh-Hans">')
           html = html.replace('<title>Web KaTrain</title>', '<title>围棋试下</title>')
-          html = html.replace('content="Web KaTrain"', 'content="围棋试下"')
           html = html.replace(
               'content="Web KaTrain is a browser-native Go study board with SGF editing, analysis, library storage, and offline-ready review tools."',
-              'content="围棋摆棋、悔棋、试下与浏览器本地 KataGo AI 分析。"',
+              'content="私人围棋棋盘：下棋、局势分析与 KataGo AI 指导。"'
           )
-
-          # 在 body 内插入一段说明容器，后面用 JS 填充中文帮助
-          if '<body>' in html and 'id="cn-help-root"' not in html:
-              html = html.replace(
-                  '<body>',
-                  '<body>\n  <div id="cn-help-root"></div>',
-                  1
-              )
-
           index_path.write_text(html, encoding="utf-8")
 
-          # =====================================================
-          # 2) PWA manifest
-          # =====================================================
           manifest_path = root / "public" / "manifest.webmanifest"
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           manifest["name"] = "围棋试下"
           manifest["short_name"] = "围棋"
-          manifest["description"] = "围棋摆棋、悔棋、试下与浏览器本地 KataGo AI 分析。"
+          manifest["description"] = "私人围棋棋盘：下棋、局势分析与 KataGo AI 指导。"
           manifest_path.write_text(
               json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
               encoding="utf-8"
           )
 
-          # =====================================================
-          # 3) 修改 gameStore.ts
-          # =====================================================
+          app_info = root / "src" / "utils" / "appInfo.ts"
+          app_info_text = app_info.read_text(encoding="utf-8")
+          app_info_text = app_info_text.replace("name: 'Web KaTrain'", "name: '围棋试下'", 1)
+          app_info.write_text(app_info_text, encoding="utf-8")
+
+          # ---------- 默认仍然关闭 AI ----------
+          # 不把 isAnalysisMode 默认改为 true。
+          # 只把旧版默认覆盖层关掉，让“下棋模式”保持干净。
           store_path = root / "src" / "store" / "gameStore.ts"
           store = store_path.read_text(encoding="utf-8")
 
-          replacements = [
-              (r"export const DEFAULT_KATAGO_VISITS\s*=\s*\d+;", "export const DEFAULT_KATAGO_VISITS = 250;"),
-              (r"katagoMaxTimeMs:\s*\d+,", "katagoMaxTimeMs: 4000,"),
-              (r"katagoBatchSize:\s*\d+,", "katagoBatchSize: 8,"),
-              (r"katagoTopK:\s*\d+,", "katagoTopK: 3,"),
-              (r"katagoAnalysisPvLen:\s*\d+,", "katagoAnalysisPvLen: 20,"),
-            ]
-
-          for pattern, replacement in replacements:
-              store, count = re.subn(pattern, replacement, store, count=1)
-              print(("Patched: " if count else "Not found: ") + pattern)
-
-          # 固定界面语言为简体中文
+          store = store.replace(
+              "import { getPreferredAppLocaleId, isAppLocaleId } from '../utils/locales';",
+              "import { isAppLocaleId } from '../utils/locales';",
+              1
+          )
           store = store.replace(
               "appLocale: getPreferredAppLocaleId(),",
               "appLocale: 'zh',",
               1
           )
 
-          # 删除未使用 import，避免构建报错
-          store = store.replace(
-              "import { getPreferredAppLocaleId, isAppLocaleId } from '../utils/locales';",
-              "import { isAppLocaleId } from '../utils/locales';",
-              1
-          )
+          # 初始参数只是兜底，实际由三个模式动态切换。
+          patches = [
+              (r"export const DEFAULT_KATAGO_VISITS\s*=\s*\d+;", "export const DEFAULT_KATAGO_VISITS = 120;"),
+              (r"katagoMaxTimeMs:\s*\d+,", "katagoMaxTimeMs: 2000,"),
+              (r"katagoBatchSize:\s*\d+,", "katagoBatchSize: 4,"),
+              (r"katagoTopK:\s*\d+,", "katagoTopK: 1,"),
+              (r"katagoAnalysisPvLen:\s*\d+,", "katagoAnalysisPvLen: 0,"),
+          ]
+          for pattern, replacement in patches:
+              store, count = re.subn(pattern, replacement, store, count=1)
+              if count != 1:
+                  raise RuntimeError(f"Expected one setting patch for {pattern}, got {count}")
 
-          # 默认开启 AI 分析模式
-          store = store.replace(
-              "isAnalysisMode: false,",
-              "isAnalysisMode: true,",
-              1
-          )
-
-          # 默认不显示 ownership 热图，避免棋盘太乱
-          store = store.replace(
-              "analysisShowOwnership: true,",
-              "analysisShowOwnership: false,",
-              1
-          )
-
+          store = store.replace("analysisShowChildren: true,", "analysisShowChildren: false,", 1)
+          store = store.replace("analysisShowEval: true,", "analysisShowEval: false,", 1)
+          store = store.replace("analysisShowHints: true,", "analysisShowHints: false,", 1)
+          store = store.replace("analysisShowOwnership: true,", "analysisShowOwnership: false,", 1)
           store_path.write_text(store, encoding="utf-8")
 
-          # =====================================================
-          # 4) 修改 layout/types.ts
-          # 默认在分析模式显示 hint
-          # =====================================================
-          layout_types_path = root / "src" / "components" / "layout" / "types.ts"
-          layout_types = layout_types_path.read_text(encoding="utf-8")
+          # ---------- 棋盘上 AI 推荐最多只显示前三 ----------
+          hints_path = root / "src" / "utils" / "analysisHints.ts"
+          hints = hints_path.read_text(encoding="utf-8")
+          hints = hints.replace(
+              "export const ANALYSIS_HINT_LIMIT = 10;",
+              "export const ANALYSIS_HINT_LIMIT = 3;",
+              1
+          )
+          hints = hints.replace(
+              "export const COMPACT_ANALYSIS_HINT_LIMIT = 5;",
+              "export const COMPACT_ANALYSIS_HINT_LIMIT = 3;",
+              1
+          )
+          hints_path.write_text(hints, encoding="utf-8")
 
-          # analyze 模式下默认 show hints
-          layout_types = layout_types.replace(
-              "analysisShowHints: true,",
-              "analysisShowHints: true,",
+          # ---------- Layout 接入私人模式 ----------
+          layout_path = root / "src" / "components" / "Layout.tsx"
+
+          replace_once(
+              layout_path,
+              "import { CandidatePvTiles } from './CandidatePvTiles';",
+              "import { CandidatePvTiles } from './CandidatePvTiles';\n"
+              "import { PersonalModeDock } from './PersonalModeDock';\n"
+              "import { usePersonalModeStore } from '../store/personalModeStore';",
+              "Layout imports"
+          )
+
+          replace_once(
+              layout_path,
+              "  const [reportHoverMove, setReportHoverMove] = useState<CandidateMove | null>(null);",
+              "  const [reportHoverMove, setReportHoverMove] = useState<CandidateMove | null>(null);\n"
+              "  const personalPreviewMove = usePersonalModeStore((state) => state.previewMove);",
+              "personal preview selector"
+          )
+
+          replace_once(
+              layout_path,
+              "  const activeHoverMove = reportHoverMove ?? hoveredMove;",
+              "  const activeHoverMove = personalPreviewMove ?? reportHoverMove ?? hoveredMove;",
+              "personal PV overlay"
+          )
+
+          # 两个棋盘实例都允许私人 PV 强制显示。
+          layout_text = layout_path.read_text(encoding="utf-8")
+          force_count = layout_text.count("forcePvOverlay={!!reportHoverMove}")
+          if force_count < 1:
+              raise RuntimeError("No forcePvOverlay anchor found")
+          layout_text = layout_text.replace(
+              "forcePvOverlay={!!reportHoverMove}",
+              "forcePvOverlay={!!reportHoverMove || !!personalPreviewMove}"
+          )
+
+          # 原版 CandidatePvTiles 在手机上会重复显示，我们自己的中文推荐卡片已替代它。
+          layout_text = layout_text.replace(
+              "{isMobile && showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode && (",
+              "{false && isMobile && showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode && (",
               1
           )
 
-          # play 模式下也顺带开启 children，保持默认
-          layout_types_path.write_text(layout_types, encoding="utf-8")
+          # 三模式中文控制层对电脑和手机都显示。
+          desktop_anchor = "      {isDesktop && (\n"
+          if desktop_anchor not in layout_text:
+              raise RuntimeError("Desktop render anchor not found")
+          layout_text = layout_text.replace(
+              desktop_anchor,
+              "      <PersonalModeDock />\n\n" + desktop_anchor,
+              1
+          )
 
-          # =====================================================
-          # 5) 只保留前三推荐着
-          # =====================================================
-          hints_path = root / "src" / "utils" / "analysisHints.ts"
-          if hints_path.exists():
-              hints = hints_path.read_text(encoding="utf-8")
-              hints = hints.replace(
-                  "export const ANALYSIS_HINT_LIMIT = 10;",
-                  "export const ANALYSIS_HINT_LIMIT = 3;"
-              )
-              hints = hints.replace(
-                  "export const COMPACT_ANALYSIS_HINT_LIMIT = 5;",
-                  "export const COMPACT_ANALYSIS_HINT_LIMIT = 3;"
-              )
-              hints_path.write_text(hints, encoding="utf-8")
-          else:
-              print("analysisHints.ts not found; keep upstream defaults")
+          layout_path.write_text(layout_text, encoding="utf-8")
 
-          # =====================================================
-          # 6) 候选着按钮：前三个 + 点击显示20手变化
-          # =====================================================
-          candidate_path = root / "src" / "components" / "CandidatePvTiles.tsx"
-          if candidate_path.exists():
-              candidate = candidate_path.read_text(encoding="utf-8")
-
-              candidate = candidate.replace(".slice(0, 12),", ".slice(0, 3),")
-              candidate = candidate.replace("{tiles.map((move) => {", "{tiles.map((move, index) => {")
-
-              candidate = candidate.replace(
-                  "onClick={() => onPin(active ? null : move)}",
-                  """onClick={() =>
-                    onPin(
-                      active
-                        ? null
-                        : {
-                            ...move,
-                            pv: move.pv?.slice(0, 20),
-                          }
-                    )
-                  }"""
-              )
-
-              candidate = candidate.replace(
-                  "<span>{moveLabel(move, boardSize)}</span>",
-                  """<span className="font-semibold">{index + 1}. {moveLabel(move, boardSize)}</span>"""
-              )
-
-              candidate = candidate.replace(
-                  "className=\"text-xs text-[var(--ui-text-faint)]\"",
-                  "className=\"text-xs text-[var(--ui-text-faint)]\""
-              )
-
-              candidate_path.write_text(candidate, encoding="utf-8")
-          else:
-              print("CandidatePvTiles.tsx not found; keep upstream defaults")
-
-          # =====================================================
-          # 7) 让候选着按钮在桌面也显示
-          # =====================================================
-          layout_path = root / "src" / "components" / "Layout.tsx"
-          if layout_path.exists():
-              layout = layout_path.read_text(encoding="utf-8")
-              layout = layout.replace(
-                  "isMobile && showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode",
-                  "showBoardAnalysisCommandBar && isAnalysisMode && !isEditMode && !scoringMode"
-              )
-              layout_path.write_text(layout, encoding="utf-8")
-          else:
-              print("Layout.tsx not found; keep upstream defaults")
-
-          # =====================================================
-          # 8) 注入一个中文帮助脚本
-          # 这一步不依赖 React 结构，比较稳
-          # =====================================================
-          help_js = r"""
-          (() => {
-            const TEXT_MAP = [
-              ['Play', '对弈'],
-              ['Review', '复盘'],
-              ['Game tree', '棋谱树'],
-              ['Analysis', 'AI分析'],
-              ['Win rate', '胜率'],
-              ['Score', '目差'],
-              ['Children', '分支'],
-              ['Dots', '评价点'],
-              ['Top moves', 'AI推荐着'],
-              ['Heatmap', 'AI偏好热图'],
-              ['Territory', '势力判断'],
-              ['Quick graph', '快速分析'],
-              ['Fast review', '快速复盘'],
-              ['Report', '分析报告'],
-              ['Comment', '局面说明'],
-              ['Pass', '虚手'],
-              ['Region', '局部分析'],
-              ['Insert', '插入变化'],
-              ['Edit', '摆棋'],
-              ['AI move', 'AI下一手'],
-              ['Play best', '走最佳着'],
-              ['Untitled', '未命名'],
-              ['Unsaved', '未保存'],
-              ['Black', '黑棋'],
-              ['White', '白棋'],
-              ['TO MOVE', '行棋方'],
-              ['Analyze', '开始分析'],
-              ['Analysis mode', 'AI分析模式'],
-              ['View', '视图'],
-            ];
-
-            function replaceText(node) {
-              if (!node) return;
-              if (node.nodeType === Node.TEXT_NODE) {
-                let text = node.nodeValue;
-                if (!text) return;
-                for (const [en, zh] of TEXT_MAP) {
-                  if (text.trim() === en) {
-                    node.nodeValue = text.replace(en, zh);
-                    return;
-                  }
-                }
-                return;
-              }
-              if (node.nodeType !== Node.ELEMENT_NODE) return;
-              for (const child of node.childNodes) replaceText(child);
-            }
-
-            function installHelpPanel() {
-              if (document.getElementById('cn-help-panel')) return;
-              const root = document.getElementById('cn-help-root') || document.body;
-              const panel = document.createElement('div');
-              panel.id = 'cn-help-panel';
-              panel.style.position = 'fixed';
-              panel.style.right = '16px';
-              panel.style.bottom = '16px';
-              panel.style.width = '320px';
-              panel.style.maxWidth = 'calc(100vw - 24px)';
-              panel.style.background = 'rgba(255,255,255,0.96)';
-              panel.style.border = '1px solid #d9d9d9';
-              panel.style.borderRadius = '14px';
-              panel.style.boxShadow = '0 10px 30px rgba(0,0,0,0.12)';
-              panel.style.padding = '12px 14px';
-              panel.style.zIndex = '99999';
-              panel.style.fontSize = '13px';
-              panel.style.lineHeight = '1.55';
-              panel.style.color = '#222';
-
-              panel.innerHTML = `
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
-                  <strong style="font-size:14px;">围棋试下 · 中文说明</strong>
-                  <button id="cn-help-close" style="border:none;background:transparent;font-size:16px;cursor:pointer;">×</button>
-                </div>
-                <div style="margin-bottom:8px;">
-                  <div><strong>你最常用的地方：</strong></div>
-                  <div>1. 右上 <b>AI分析模式</b>：保持开启即可。</div>
-                  <div>2. 右侧 <b>AI推荐着</b>：看前三推荐。</div>
-                  <div>3. 点击任一推荐着：显示该着法的 <b>20手变化图</b>。</div>
-                  <div>4. 下方 <b>虚手 / 摆棋 / 走最佳着</b>：常用操作。</div>
-                </div>
-                <div style="margin-bottom:8px;">
-                  <div><strong>推荐使用流程：</strong></div>
-                  <div>摆好局面 → 看前三推荐 → 点其中一个 → 观察 20 手变化。</div>
-                </div>
-                <div style="color:#666;">
-                  若面板挡住视线，点右上角 × 可关闭。
-                </div>
-              `;
-              root.appendChild(panel);
-              const closeBtn = document.getElementById('cn-help-close');
-              if (closeBtn) {
-                closeBtn.addEventListener('click', () => panel.remove());
-              }
-            }
-
-            function patchBestMoveBar() {
-              const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-              const nodes = [];
-              while (walker.nextNode()) nodes.push(walker.currentNode);
-
-              for (const node of nodes) {
-                const text = node.nodeValue || '';
-                if (text.includes('BEST MOVE')) {
-                  node.nodeValue = text.replace('BEST MOVE', '最佳着');
-                }
-                if (text.includes('PLAYED')) {
-                  node.nodeValue = text.replace('PLAYED', '本手评价');
-                }
-                if (text.includes('WIN RATE')) {
-                  node.nodeValue = text.replace('WIN RATE', '胜率');
-                }
-                if (text.includes('SCORE')) {
-                  node.nodeValue = text.replace('SCORE', '目差');
-                }
-              }
-            }
-
-            function applyAll() {
-              replaceText(document.body);
-              patchBestMoveBar();
-              installHelpPanel();
-            }
-
-            const observer = new MutationObserver(() => {
-              applyAll();
-            });
-
-            window.addEventListener('load', () => {
-              applyAll();
-              observer.observe(document.body, { childList: true, subtree: true });
-            });
-          })();
-          """
-
-          help_js_path = root / "public" / "cn-help.js"
-          help_js_path.write_text(help_js, encoding="utf-8")
-
-          # 把脚本插入 index.html
-          html = index_path.read_text(encoding="utf-8")
-          if 'src="/cn-help.js"' not in html and 'src="./cn-help.js"' not in html:
-              html = html.replace(
-                  "</body>",
-                  '  <script src="./cn-help.js"></script>\n</body>'
-              )
-          index_path.write_text(html, encoding="utf-8")
-
-          # =====================================================
-          # 9) 保留 MIT 许可
-          # =====================================================
+          # ---------- 保留开源许可 ----------
           license_text = (root / "LICENSE").read_text(encoding="utf-8")
           (root / "public" / "WEB_KATRAIN_LICENSE.txt").write_text(
               license_text,
               encoding="utf-8"
           )
 
-          # =====================================================
-          # 10) 写一个构建说明
-          # =====================================================
           (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "围棋试下 私人中文版\n"
-              "基于: Web KaTrain\n"
-              "默认AI推荐: 前3手\n"
-              "PV深度: 20手\n"
-              "默认分析: 250 visits / 4秒\n"
-              "语言: 简体中文（私人增强版）\n",
+              "围棋试下私人三模式版\n"
+              "默认：下棋模式，AI关闭\n"
+              "局势分析：120 visits / 最长2秒 / 胜率+目差\n"
+              "AI指导：250 visits / 最长4秒 / Top3 / PV最多20手\n"
+              "AI：浏览器本地 KataGo 风格引擎，WebGPU 优先\n",
               encoding="utf-8"
           )
 
-          print("Chinese private customization complete.")
+          print("Private three-mode customization complete.")
           PY
 
       - name: Setup Node
@@ -399,7 +511,7 @@ jobs:
         working-directory: app
         run: npm ci
 
-      - name: Build Go Board AI CN
+      - name: Build Go Board
         working-directory: app
         env:
           VITE_BASE_URL: /go-board/
@@ -416,7 +528,6 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
