@@ -85,20 +85,17 @@ jobs:
           import type { CandidateMove, EditTool } from '../types';
           import { publicUrl } from '../utils/publicUrl';
 
-          type AnalysisStrength = 100 | 300 | 1000 | 10000 | 50000;
+          type AnalysisStrength = 1000 | 10000 | 50000;
 
-          type StrengthPreset = {
+          const B18_MODEL_URL = publicUrl('models/katago-b18.bin.gz');
+
+          const STRENGTHS: Array<{
             visits: AnalysisStrength;
             label: string;
             shortLabel: string;
             maxTimeMs: number;
             description: string;
-          };
-
-          const DESKTOP_MODEL_URL = publicUrl('models/katago-b18.bin.gz');
-          const MOBILE_MODEL_URL = publicUrl('models/katago-small.bin.gz');
-
-          const DESKTOP_STRENGTHS: StrengthPreset[] = [
+          }> = [
             {
               visits: 1000,
               label: '快速',
@@ -121,45 +118,6 @@ jobs:
               description: '50,000 visits',
             },
           ];
-
-          const MOBILE_STRENGTHS: StrengthPreset[] = [
-            {
-              visits: 100,
-              label: '省电',
-              shortLabel: '100',
-              maxTimeMs: 8000,
-              description: '100 visits',
-            },
-            {
-              visits: 300,
-              label: '标准',
-              shortLabel: '300',
-              maxTimeMs: 15000,
-              description: '300 visits',
-            },
-            {
-              visits: 1000,
-              label: '深入',
-              shortLabel: '1k',
-              maxTimeMs: 30000,
-              description: '1,000 visits',
-            },
-          ];
-
-          function detectMobileProfile(): boolean {
-            if (typeof navigator === 'undefined') return false;
-
-            const ua = navigator.userAgent ?? '';
-            const iOS =
-              /iPhone|iPad|iPod/i.test(ua) ||
-              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-            const android = /Android/i.test(ua);
-            const coarseSmall =
-              typeof window !== 'undefined' &&
-              window.matchMedia('(max-width: 820px) and (pointer: coarse)').matches;
-
-            return iOS || android || coarseSmall;
-          }
 
           function moveLabel(move: CandidateMove, boardSize: number): string {
             if (move.x < 0 || move.y < 0) return '虚手';
@@ -216,14 +174,8 @@ jobs:
             const setMode = usePersonalModeStore((state) => state.setMode);
             const setPreviewMove = usePersonalModeStore((state) => state.setPreviewMove);
 
-            const mobileProfile = useMemo(() => detectMobileProfile(), []);
-            const activeStrengths = mobileProfile ? MOBILE_STRENGTHS : DESKTOP_STRENGTHS;
-            const activeModelUrl = mobileProfile ? MOBILE_MODEL_URL : DESKTOP_MODEL_URL;
-            const activeModelName = mobileProfile ? 'b6 轻量模型' : 'b18 强模型';
-
-            const [strength, setStrength] = useState<AnalysisStrength>(() =>
-              detectMobileProfile() ? 300 : 10000
-            );
+            // 强力档作为默认。需要最高搜索时手动切到 50k。
+            const [strength, setStrength] = useState<AnalysisStrength>(10000);
             const [newGameArmed, setNewGameArmed] = useState(false);
 
             const analysis = currentNode.analysis ?? null;
@@ -259,29 +211,30 @@ jobs:
               visits: AnalysisStrength
             ) => {
               const guide = nextMode === 'guide';
-              const fallback = activeStrengths[1] ?? activeStrengths[0]!;
-              const cfg = activeStrengths.find((item) => item.visits === visits) ?? fallback;
+              const cfg = STRENGTHS.find((item) => item.visits === visits) ?? STRENGTHS[1]!;
 
               return {
                 guide,
-                visits: cfg.visits,
+                visits,
                 maxTimeMs: cfg.maxTimeMs,
-                batchSize: mobileProfile ? 2 : 8,
+                batchSize: 8,
                 topK: guide ? 3 : 1,
                 analysisPvLen: guide ? 20 : 0,
               };
             };
 
-            const configureEngine = (
+            const configureStrongEngine = (
               nextMode: Exclude<PersonalMode, 'play'>,
               visits: AnalysisStrength
             ) => {
               const opts = analysisOptions(nextMode, visits);
 
               updateSettings({
-                katagoModelUrl: activeModelUrl,
+                // 浏览器强模型：KataGo b18 ~96MB
+                katagoModelUrl: B18_MODEL_URL,
                 katagoBackend: 'webgpu',
 
+                // 更接近正式分析，而不是训练/随机探索。
                 katagoWideRootNoise: 0,
                 katagoRootPolicyTemperature: 1,
                 katagoNnRandomize: false,
@@ -309,9 +262,10 @@ jobs:
               visits: AnalysisStrength = strength
             ) => {
               stopBoardTools();
-              const opts = configureEngine(nextMode, visits);
+              const opts = configureStrongEngine(nextMode, visits);
 
               if (!isAnalysisMode) {
+                // toggleAnalysisMode 会使用刚刚同步写入的 b18 / visits 设置。
                 toggleAnalysisMode();
               } else {
                 stopAnalysis();
@@ -361,11 +315,9 @@ jobs:
 
             const openSetup = () => {
               if (isInsertMode) toggleInsertMode();
-
               if (!isEditMode) {
-                // setEditTool 本身就会进入 isEditMode=true。
-                // 不要再调用 toggleEditMode，否则会立刻又切回 false。
                 setEditTool('setup-alternate');
+                toggleEditMode();
               } else {
                 toggleEditMode();
               }
@@ -444,9 +396,9 @@ jobs:
                 : engineStatus === 'error'
                   ? 'AI异常'
                   : engineStatus === 'loading'
-                    ? `${activeModelName}加载中…`
+                    ? 'b18加载中…'
                     : engineStatus === 'ready'
-                      ? `${engineBackend === 'webgpu' ? 'WebGPU' : engineBackend ?? 'AI'} · ${activeModelName}`
+                      ? `${engineBackend === 'webgpu' ? 'WebGPU' : engineBackend ?? 'AI'} · b18`
                       : '准备分析';
 
             return (
@@ -486,12 +438,6 @@ jobs:
                     {aiStatus}
                   </div>
                 </div>
-
-                {mobileProfile && (
-                  <div className="mt-1 text-center text-[9px] font-semibold text-[var(--ui-text-faint)]">
-                    手机版 · b6轻量模型 · 为iPhone/Android降低内存与GPU压力
-                  </div>
-                )}
 
                 {mode === 'play' && (
                   <div className="mt-1.5 flex flex-wrap items-center justify-center gap-0.5 border-t border-[var(--ui-border)] pt-1.5">
@@ -566,7 +512,7 @@ jobs:
                       ) : (
                         <span className="text-[var(--ui-text-muted)]">
                           {engineStatus === 'loading'
-                            ? `首次加载${activeModelName}…`
+                            ? '首次加载 b18 强模型（约96MB）…'
                             : '正在分析当前局面…'}
                         </span>
                       )}
@@ -585,7 +531,7 @@ jobs:
                         算力
                       </span>
 
-                      {activeStrengths.map((item) => (
+                      {STRENGTHS.map((item) => (
                         <button
                           key={item.visits}
                           type="button"
@@ -603,22 +549,16 @@ jobs:
                         </button>
                       ))}
 
-                      {!mobileProfile && strength === 50000 && (
+                      {strength === 50000 && (
                         <span className="ml-1 text-[10px] font-semibold text-amber-600">
                           极限档最长可运行5分钟
-                        </span>
-                      )}
-
-                      {mobileProfile && strength === 1000 && (
-                        <span className="ml-1 text-[10px] font-semibold text-amber-600">
-                          深入档会明显发热
                         </span>
                       )}
                     </div>
 
                     {mode === 'position' && (
                       <div className="mt-1 text-center text-[10px] text-[var(--ui-text-faint)]">
-                        {activeModelName} · 只显示局势判断，不提示下一手
+                        b18 强模型 · 只显示局势判断，不提示下一手
                       </div>
                     )}
 
@@ -669,7 +609,7 @@ jobs:
                     )}
 
                     <div className="mt-1 text-center text-[9px] text-[var(--ui-text-faint)]">
-                      模型：KataGo {activeModelName} · WebGPU优先
+                      模型：KataGo b18 · WebGPU优先
                       {engineModelName ? ` · ${engineModelName}` : ''}
                     </div>
                   </div>
@@ -981,12 +921,12 @@ jobs:
           )
 
           (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "围棋试下 v7.2 摆棋修复版\n"
+              "围棋试下 v6 浏览器最强版\n"
               "默认：下棋模式，AI关闭\n"
               "下棋工具：悔棋/前进/停一手/摆棋/研究变化/新棋局\n"
-              "桌面：KataGo b18 ~96MB / 1k-10k-50k\n"
-              "手机：KataGo b6 轻量模型 / 100-300-1k\n"
-              "设备自动识别并切换模型与搜索量\n"
+              "模型：KataGo b18 ~96MB / WebGPU优先\n"
+              "三档算力：1k / 10k / 50k visits\n"
+              "极限档：最多50,000 visits / 最长300秒\n"
               "AI指导：Top3 / PV最多20手\n"
               "AI：浏览器本地 KataGo 风格引擎，WebGPU 优先\n",
               encoding="utf-8"
@@ -1005,13 +945,6 @@ jobs:
       - name: Install dependencies
         working-directory: app
         run: npm ci
-
-      - name: Verify bundled mobile model source
-        working-directory: app
-        run: |
-          echo "Mobile AI will use the upstream-supported bundled model:"
-          echo "models/katago-small.bin.gz"
-          echo "The prebuild hook will fetch it automatically before Vite builds."
 
       - name: Build Go Board
         working-directory: app
