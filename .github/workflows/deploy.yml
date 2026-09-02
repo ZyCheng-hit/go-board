@@ -361,9 +361,11 @@ jobs:
 
             const openSetup = () => {
               if (isInsertMode) toggleInsertMode();
+
               if (!isEditMode) {
+                // setEditTool 本身就会进入 isEditMode=true。
+                // 不要再调用 toggleEditMode，否则会立刻又切回 false。
                 setEditTool('setup-alternate');
-                toggleEditMode();
               } else {
                 toggleEditMode();
               }
@@ -979,7 +981,7 @@ jobs:
           )
 
           (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "围棋试下 v7.1 手机稳定版\n"
+              "围棋试下 v7.2 摆棋修复版\n"
               "默认：下棋模式，AI关闭\n"
               "下棋工具：悔棋/前进/停一手/摆棋/研究变化/新棋局\n"
               "桌面：KataGo b18 ~96MB / 1k-10k-50k\n"
