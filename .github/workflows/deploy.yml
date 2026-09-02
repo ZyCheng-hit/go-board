@@ -46,24 +46,6 @@ jobs:
           test -s "$MODEL_PATH"
           ls -lh "$MODEL_PATH"
 
-      - name: Download mobile KataGo b10 model
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p app/public/models
-          MODEL_PATH="app/public/models/katago-mobile-b10.bin.gz"
-          MODEL_URL="https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b10c128-s1141046784-d204142634.bin.gz"
-
-          if [ ! -s "$MODEL_PATH" ]; then
-            echo "Downloading KataGo b10 mobile model (~12 MB)..."
-            curl -L --fail --retry 3 --retry-delay 3 \
-              --output "$MODEL_PATH" \
-              "$MODEL_URL"
-          fi
-
-          test -s "$MODEL_PATH"
-          ls -lh "$MODEL_PATH"
-
       - name: Build private Chinese three-mode UI
         shell: bash
         run: |
@@ -114,7 +96,7 @@ jobs:
           };
 
           const DESKTOP_MODEL_URL = publicUrl('models/katago-b18.bin.gz');
-          const MOBILE_MODEL_URL = publicUrl('models/katago-mobile-b10.bin.gz');
+          const MOBILE_MODEL_URL = publicUrl('models/katago-small.bin.gz');
 
           const DESKTOP_STRENGTHS: StrengthPreset[] = [
             {
@@ -237,7 +219,7 @@ jobs:
             const mobileProfile = useMemo(() => detectMobileProfile(), []);
             const activeStrengths = mobileProfile ? MOBILE_STRENGTHS : DESKTOP_STRENGTHS;
             const activeModelUrl = mobileProfile ? MOBILE_MODEL_URL : DESKTOP_MODEL_URL;
-            const activeModelName = mobileProfile ? 'b10 移动模型' : 'b18 强模型';
+            const activeModelName = mobileProfile ? 'b6 轻量模型' : 'b18 强模型';
 
             const [strength, setStrength] = useState<AnalysisStrength>(() =>
               detectMobileProfile() ? 300 : 10000
@@ -505,7 +487,7 @@ jobs:
 
                 {mobileProfile && (
                   <div className="mt-1 text-center text-[9px] font-semibold text-[var(--ui-text-faint)]">
-                    手机版 · b10约12MB · 为iPhone/Android降低内存与GPU压力
+                    手机版 · b6轻量模型 · 为iPhone/Android降低内存与GPU压力
                   </div>
                 )}
 
@@ -997,11 +979,11 @@ jobs:
           )
 
           (root / "public" / "GO_BOARD_BUILD.txt").write_text(
-              "围棋试下 v7 桌面/手机双配置版\n"
+              "围棋试下 v7.1 手机稳定版\n"
               "默认：下棋模式，AI关闭\n"
               "下棋工具：悔棋/前进/停一手/摆棋/研究变化/新棋局\n"
               "桌面：KataGo b18 ~96MB / 1k-10k-50k\n"
-              "手机：KataGo b10 ~12MB / 100-300-1k\n"
+              "手机：KataGo b6 轻量模型 / 100-300-1k\n"
               "设备自动识别并切换模型与搜索量\n"
               "AI指导：Top3 / PV最多20手\n"
               "AI：浏览器本地 KataGo 风格引擎，WebGPU 优先\n",
@@ -1021,6 +1003,13 @@ jobs:
       - name: Install dependencies
         working-directory: app
         run: npm ci
+
+      - name: Verify bundled mobile model source
+        working-directory: app
+        run: |
+          echo "Mobile AI will use the upstream-supported bundled model:"
+          echo "models/katago-small.bin.gz"
+          echo "The prebuild hook will fetch it automatically before Vite builds."
 
       - name: Build Go Board
         working-directory: app
